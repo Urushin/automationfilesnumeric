@@ -89,12 +89,20 @@ def _otsu_threshold(gray_img) -> int:
 
 
 def binarize_png(png_path: str, output_path: str, threshold: int = 180):
-    """Force a PNG to absolute black/white pixels before vector tracing."""
+    """Force a PNG to absolute black/white pixels before vector tracing.
+    Alpha-flattens on white first so transparent pixels become white, not black.
+    """
     if not os.path.exists(png_path):
         raise FileNotFoundError(f"Source PNG not found at {png_path}")
 
     with Image.open(png_path) as img:
-        gray = img.convert("L")
+        if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+            white_bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
+            white_bg.alpha_composite(img.convert("RGBA"))
+            img_rgb = white_bg.convert("RGB")
+        else:
+            img_rgb = img.convert("RGB")
+        gray = img_rgb.convert("L")
         bw = gray.point(lambda pixel: 0 if pixel < threshold else 255, mode="1")
         bw.convert("RGB").save(output_path, "PNG", optimize=True)
 
@@ -103,48 +111,59 @@ def convert_png_to_mono_bmp(png_path: str, bmp_path: str):
     """
     Convertit un PNG en BMP monochrome 1-bit pour Potrace.
     Pipeline optimisé :
-      1. GaussianBlur léger → lisse les artéfacts JPEG DALL-E 3
-      2. Seuillage Otsu adaptatif → binarisation optimale sans paramètre manuel
-      3. Fermeture morphologique (MaxFilter→MinFilter) → comble les micro-trous
+      1. Alpha-flatten sur blanc : les pixels transparents deviennent blancs
+         (et non noirs), préservant les fines lignes de séparation blanches.
+      2. GaussianBlur léger → réduit uniquement les artéfacts JPEG (radius=0.8).
+      3. Seuillage Otsu adaptatif, seuil plancher ≥ 180 pour ne pas assombrir
+         les traits fins.
+    IMPORTANT : MaxFilter/MinFilter supprimés — ils détruisent les lignes fines.
     """
     if not os.path.exists(png_path):
         raise FileNotFoundError(f"Source PNG not found at {png_path}")
 
     with Image.open(png_path) as img:
-        # Convertir en niveaux de gris
-        gray = img.convert("L")
+        # Étape 1 : Alpha-flatten sur blanc
+        if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+            white_bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
+            white_bg.alpha_composite(img.convert("RGBA"))
+            img_rgb = white_bg.convert("RGB")
+        else:
+            img_rgb = img.convert("RGB")
 
-        # Étape 1 : Lissage des artéfacts de compression JPEG/DALL-E
-        gray = gray.filter(ImageFilter.GaussianBlur(radius=1.5))
+        # Étape 2 : Niveaux de gris + blur léger
+        gray = img_rgb.convert("L")
+        gray = gray.filter(ImageFilter.GaussianBlur(radius=0.8))
 
-        # Étape 2 : Seuillage adaptatif d'Otsu
+        # Étape 3 : Seuillage Otsu avec plancher 180
         threshold = _otsu_threshold(gray)
+        threshold = max(threshold, 180)
         mono = gray.point(lambda x: 0 if x < threshold else 255, mode="1")
 
-        # Étape 3 : Fermeture morphologique pour combler les micro-trous dans les traits
-        # MaxFilter dilate (gonfle les formes noires), MinFilter érode pour retrouver la taille
-        mono_rgb = mono.convert("L")
-        mono_rgb = mono_rgb.filter(ImageFilter.MaxFilter(3))
-        mono_rgb = mono_rgb.filter(ImageFilter.MinFilter(3))
-
-        # Reconvertir en 1-bit et sauvegarder comme BMP
-        final = mono_rgb.point(lambda x: 0 if x < 128 else 255, mode="1")
-        final.save(bmp_path)
+        # Reconvertir en 1-bit et sauvegarder comme BMP pour Potrace
+        mono.save(bmp_path)
 
 def fallback_png_to_svg(png_path: str, svg_path: str):
     """
     Traces a B&W PNG image into a vector SVG using pixel runs (Run-Length Encoding).
     Runs in pure Python, providing an immediate fallback if Potrace is missing.
+    Output: transparent canvas containing ONLY black shape paths (no white rect).
     """
     with Image.open(png_path) as img:
-        img_gray = img.convert("L")
+        # Alpha-flatten on white before reading pixels
+        if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+            white_bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
+            white_bg.alpha_composite(img.convert("RGBA"))
+            img_gray = white_bg.convert("L")
+        else:
+            img_gray = img.convert("L")
         width, height = img_gray.size
-        
+
+        # SVG header: no background rect — transparent canvas
         svg_lines = [
-            f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="{width}" height="{height}">',
-            f'  <rect width="{width}" height="{height}" fill="white" />'
+            f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
+            f'width="{width}" height="{height}">',
         ]
-        
+
         path_instructions = []
         for y in range(height):
             in_run = False
@@ -162,12 +181,14 @@ def fallback_png_to_svg(png_path: str, svg_path: str):
             if in_run:
                 run_len = width - start_x
                 path_instructions.append(f"M{start_x},{y} h{run_len} v1 h-{run_len} z")
-                
+
         if path_instructions:
-            svg_lines.append(f'  <path d="{" ".join(path_instructions)}" fill="black" />')
-            
+            svg_lines.append(
+                f'  <path d="{" ".join(path_instructions)}" fill="#000000" fill-rule="evenodd" />'
+            )
+
         svg_lines.append("</svg>")
-        
+
         with open(svg_path, "w") as f:
             f.write("\n".join(svg_lines))
 
@@ -258,8 +279,14 @@ def png_to_svg(potrace_bin: str, png_path: str, svg_path: str):
     try:
         convert_png_to_mono_bmp(png_path, temp_bmp)
         
-        # --turdsize 10 : ignore les micro-taches < 10px² (élimine les bruits)
-        cmd = [potrace_bin, temp_bmp, "-s", "--turdsize", "10", "-o", svg_path]
+        # --turdsize 5: ignore micro-spots < 5px²
+        # --blacklevel 0.5: treat pixels > 50% grey as background (white), trace only dark shapes
+        # -O 0.2: tighter curve optimisation for clean laser paths
+        cmd = [potrace_bin, temp_bmp, "-s",
+               "--turdsize", "5",
+               "--blacklevel", "0.5",
+               "-O", "0.2",
+               "-o", svg_path]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             print(f"Potrace run failed: {result.stderr}. Falling back to pure Python tracer.")
@@ -287,7 +314,11 @@ async def png_to_svg_async(potrace_bin: str, png_path: str, svg_path: str):
         await asyncio.to_thread(convert_png_to_mono_bmp, png_path, temp_bmp)
         # --turdsize 10 : ignore les micro-taches (élimine le bruit de compression)
         code, _, stderr = await run_cli([
-            potrace_bin, temp_bmp, "-s", "--turdsize", "10", "-o", svg_path
+            potrace_bin, temp_bmp, "-s",
+            "--turdsize", "5",
+            "--blacklevel", "0.5",
+            "-O", "0.2",
+            "-o", svg_path
         ])
         if code != 0:
             print(f"Potrace run failed: {stderr}. Falling back to pure Python tracer.")

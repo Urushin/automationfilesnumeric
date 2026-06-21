@@ -17,6 +17,9 @@ Base.metadata.create_all(bind=engine)
 from sqlalchemy import text
 try:
     with engine.connect() as conn:
+        # Enable WAL mode dynamically on migration connection
+        conn.execute(text("PRAGMA journal_mode=WAL;"))
+
         # ── Table creations ───────────────────────────────────────────────
         result = conn.execute(text("PRAGMA table_info(creations)"))
         columns = [row[1] for row in result]
@@ -33,7 +36,14 @@ try:
             "connectivity_warnings":   "ALTER TABLE creations ADD COLUMN connectivity_warnings INTEGER DEFAULT 0",
             "compliance_warnings":     "ALTER TABLE creations ADD COLUMN compliance_warnings TEXT",
             "price":                   "ALTER TABLE creations ADD COLUMN price FLOAT DEFAULT 3.0",
-            "quantity":                "ALTER TABLE creations ADD COLUMN quantity INTEGER DEFAULT 999",
+            "real_mockup_path":        "ALTER TABLE creations ADD COLUMN real_mockup_path VARCHAR",
+            "source_type":             "ALTER TABLE creations ADD COLUMN source_type VARCHAR DEFAULT 'text_prompt'",
+            "png_paths_raw":           "ALTER TABLE creations ADD COLUMN png_paths_raw TEXT",
+            "svg_paths_raw":           "ALTER TABLE creations ADD COLUMN svg_paths_raw TEXT",
+            "pdf_paths_raw":           "ALTER TABLE creations ADD COLUMN pdf_paths_raw TEXT",
+            "pipeline_status":         "ALTER TABLE creations ADD COLUMN pipeline_status TEXT",
+            "selected_images_raw":     "ALTER TABLE creations ADD COLUMN selected_images_raw TEXT",
+            "source_png_variants_raw": "ALTER TABLE creations ADD COLUMN source_png_variants_raw TEXT",
         }
 
         for col_name, sql in migrations_creations.items():
@@ -47,6 +57,18 @@ try:
 
         migrations_settings = {
             "mockup_background_path": "ALTER TABLE settings ADD COLUMN mockup_background_path VARCHAR",
+            "banana_key":             "ALTER TABLE settings ADD COLUMN banana_key VARCHAR",
+            "image_ai_provider":      "ALTER TABLE settings ADD COLUMN image_ai_provider VARCHAR DEFAULT 'banana'",
+            "text_ai_provider":       "ALTER TABLE settings ADD COLUMN text_ai_provider VARCHAR DEFAULT 'gemini-2.0-flash-lite'",
+            "replicate_key":          "ALTER TABLE settings ADD COLUMN replicate_key VARCHAR",
+            "openrouter_key":         "ALTER TABLE settings ADD COLUMN openrouter_key VARCHAR",
+            "huggingface_key":        "ALTER TABLE settings ADD COLUMN huggingface_key VARCHAR",
+            "anthropic_key":          "ALTER TABLE settings ADD COLUMN anthropic_key VARCHAR",
+            "stability_key":          "ALTER TABLE settings ADD COLUMN stability_key VARCHAR",
+            "prompt_seo":             "ALTER TABLE settings ADD COLUMN prompt_seo TEXT",
+            "prompt_image_generation": "ALTER TABLE settings ADD COLUMN prompt_image_generation TEXT",
+            "prompt_inpainting":       "ALTER TABLE settings ADD COLUMN prompt_inpainting TEXT",
+            "prompt_trend_scraping":   "ALTER TABLE settings ADD COLUMN prompt_trend_scraping TEXT",
         }
 
         for col_name, sql in migrations_settings.items():
@@ -63,6 +85,7 @@ try:
                 thumbnail_url TEXT,
                 source_url TEXT,
                 trend_score INTEGER DEFAULT 50,
+                section VARCHAR DEFAULT 'trending',
                 category VARCHAR,
                 detected_at DATETIME,
                 is_injected BOOLEAN DEFAULT 0,
@@ -72,10 +95,13 @@ try:
         """))
         print("[migration] Ensured ideas_bank table exists.")
 
-        # Migrate ideas_bank to add description column if missing
-        result = conn.execute(text("PRAGMA table_info(ideas_bank)"))
-        ideas_columns = [row[1] for row in result]
-        if "description" not in ideas_columns:
+        # Migration pour ajouter 'section' et 'description' si la table existait déjà
+        result_ib = conn.execute(text("PRAGMA table_info(ideas_bank)"))
+        ib_columns = [row[1] for row in result_ib]
+        if "section" not in ib_columns:
+            conn.execute(text("ALTER TABLE ideas_bank ADD COLUMN section VARCHAR DEFAULT 'trending'"))
+            print("[migration] Added column: ideas_bank.section")
+        if "description" not in ib_columns:
             conn.execute(text("ALTER TABLE ideas_bank ADD COLUMN description TEXT"))
             print("[migration] Added column: ideas_bank.description")
 
@@ -119,16 +145,7 @@ os.makedirs(STORAGE_DIR, exist_ok=True)
 os.makedirs(ASSETS_DIR, exist_ok=True)
 os.makedirs(os.path.join(ASSETS_DIR, "backgrounds"), exist_ok=True)
 
-# Generate default wood background if missing
-wood_bg_path = os.path.join(ASSETS_DIR, "wood_background.jpg")
-if not os.path.exists(wood_bg_path):
-    try:
-        from .services.image import create_fallback_background
-        fallback_bg = create_fallback_background(1200, 1200)
-        fallback_bg.save(wood_bg_path, "JPEG", quality=90)
-        print("[startup] Generated default wood background image asset.")
-    except Exception as e:
-        print(f"[startup] Could not generate default background: {e}")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STATIC FILE SERVING

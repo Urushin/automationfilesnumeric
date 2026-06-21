@@ -1,0 +1,66 @@
+# Dependencies & Package Managers
+node_modules/
+.npm/
+.yarn/
+pnpm-lock.yaml
+package-lock.json
+yarn.lock
+
+# Environments & Secrets (Crucial pour la sécurité et les tokens)
+.env
+.env.*
+*.pem
+*.key
+*.secret
+
+# Build outputs & Bundles
+dist/
+build/
+.next/
+out/
+.nuxt/
+*.js.map
+*.css.map
+
+# System & IDE files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# Logs & Diagnostics
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Temporaries & Caches
+.venv/
+.cache/
+.eslintcache
+.parcel-cache
+.turbo/
+.vercel/
+
+# Heavy Assets & Medias (Évite que l'IA tente de lire des binaires)
+*.mp4
+*.mp3
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+*.ico
+*.pdf
+*.zip
+*.tar.gz
+*.rar
+
+# Project tracking data generated for NotebookLM
+project_structure.txt

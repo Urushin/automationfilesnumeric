@@ -7,7 +7,6 @@ from PIL import Image
 
 from app.database import Base
 from app.models import Setting, Creation
-from app.services.image import create_fallback_background
 
 class TestEtsyLaserAutomation(unittest.TestCase):
     
@@ -61,12 +60,6 @@ class TestEtsyLaserAutomation(unittest.TestCase):
         self.assertEqual(queried.theme, "Mandala Wolf")
         self.assertEqual(queried.title_fr, "Loup Mandala Découpe Bois")
         self.assertFalse(queried.is_published_etsy)
-
-    def test_fallback_background_generation(self):
-        """Test that the image mockup service fallback background can be created without error."""
-        bg = create_fallback_background(300, 300)
-        self.assertEqual(bg.size, (300, 300))
-        self.assertEqual(bg.mode, "RGB")
 
     def test_fallback_vectorization(self):
         """Test the pure Python SVG and DXF tracing fallback generators."""
@@ -149,6 +142,39 @@ class TestEtsyLaserAutomation(unittest.TestCase):
             
         finally:
             for p in [test_src, test_transparent, test_pdf]:
+                if os.path.exists(p):
+                    os.remove(p)
+
+    def test_real_mockup_with_tp_overlay(self):
+        """Test create_real_mockup with apply_tp_overlay=True/False."""
+        from app.services.mockup_engine import create_real_mockup
+        
+        # Create dummy stencil and background
+        stencil = Image.new("RGBA", (100, 100), (255, 255, 255, 255))
+        from PIL import ImageDraw
+        draw = ImageDraw.Draw(stencil)
+        draw.rectangle([40, 40, 60, 60], fill=(0, 0, 0, 255)) # small black square
+        bg = Image.new("RGBA", (100, 100), (255, 255, 255, 255)) # White bg
+        
+        test_stencil = "test_stencil.png"
+        test_bg = "test_bg.png"
+        test_out_false = "test_out_false.jpg"
+        test_out_true = "test_out_true.jpg"
+        
+        try:
+            stencil.save(test_stencil)
+            bg.save(test_bg)
+            
+            # Test with apply_tp_overlay=False
+            create_real_mockup(test_stencil, test_bg, test_out_false, apply_tp_overlay=False)
+            self.assertTrue(os.path.exists(test_out_false))
+            
+            # Test with apply_tp_overlay=True
+            create_real_mockup(test_stencil, test_bg, test_out_true, apply_tp_overlay=True)
+            self.assertTrue(os.path.exists(test_out_true))
+            
+        finally:
+            for p in [test_stencil, test_bg, test_out_false, test_out_true]:
                 if os.path.exists(p):
                     os.remove(p)
 

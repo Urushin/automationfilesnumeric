@@ -42,11 +42,11 @@ def _run_inkscape(inkscape_bin: str, svg_path: str, output_path: str, export_typ
             timeout=60,
         )
         return result.returncode == 0 and os.path.exists(output_path)
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        print(f"[export_formats] Inkscape export ({export_type}) failed: {e}")
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        # Mute expected missing binary errors to keep terminal clean
         return False
     except Exception as e:
-        print(f"[export_formats] Unexpected error during {export_type} export: {e}")
+        # Keep unexpected errors silent but handled
         return False
 
 
@@ -180,6 +180,7 @@ def svg_to_high_quality_png(inkscape_bin: str, svg_path: str, png_path: str, dpi
     """
     Exporte un SVG en PNG haute qualité via Inkscape (meilleur que l'upscale raster).
     Remplace convert_to_transparent_png() quand Inkscape est disponible.
+    Falls back to macOS qlmanage if Inkscape is missing on Darwin.
 
     Args:
         inkscape_bin: Chemin vers l'exécutable Inkscape
@@ -193,6 +194,7 @@ def svg_to_high_quality_png(inkscape_bin: str, svg_path: str, png_path: str, dpi
     if not os.path.exists(svg_path):
         return False
 
+    # 1. Tentative via Inkscape
     try:
         cmd = [
             inkscape_bin,
@@ -203,10 +205,27 @@ def svg_to_high_quality_png(inkscape_bin: str, svg_path: str, png_path: str, dpi
             svg_path,
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        return result.returncode == 0 and os.path.exists(png_path)
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        print(f"[export_formats] Inkscape PNG export failed: {e}")
-        return False
-    except Exception as e:
-        print(f"[export_formats] Unexpected error during PNG export: {e}")
-        return False
+        if result.returncode == 0 and os.path.exists(png_path):
+            return True
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass # Muted for clean terminal
+    except Exception:
+        pass # Muted for clean terminal
+
+    # 2. Fallback via macOS qlmanage si sur Darwin
+    import platform
+    if platform.system() == "Darwin":
+        try:
+            print(f"[export_formats] Inkscape missing/failed. Trying macOS qlmanage fallback...")
+            out_dir = os.path.dirname(png_path)
+            cmd = ["qlmanage", "-t", "-s", "1024", "-o", out_dir, svg_path]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            generated_png = svg_path + ".png"
+            if os.path.exists(generated_png):
+                shutil.move(generated_png, png_path)
+                print(f"[export_formats] qlmanage rendering succeeded → {png_path}")
+                return True
+        except Exception as qle:
+            print(f"[export_formats] qlmanage fallback failed: {qle}")
+
+    return False

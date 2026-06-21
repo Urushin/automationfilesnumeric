@@ -13,16 +13,6 @@ _BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")
 BG_DIR = os.path.join(_BACKEND_ROOT, "assets", "backgrounds")
 
 
-def _ensure_backgrounds():
-    """Create BG_DIR and generate a clean default white-plank backdrop if empty."""
-    os.makedirs(BG_DIR, exist_ok=True)
-    default_path = os.path.join(BG_DIR, "default_white_studio.jpg")
-    if not os.path.exists(default_path):
-        # Create a warm off-white linen studio background
-        bg = Image.new("RGB", (1024, 1024), (243, 241, 238))
-        bg.save(default_path, "JPEG", quality=92)
-
-
 def create_ecommerce_mockup(transparent_png_path: str, output_mockup_path: str):
     """
     Takes a transparent RGBA PNG (the upscaled stencil), applies a soft
@@ -35,7 +25,7 @@ def create_ecommerce_mockup(transparent_png_path: str, output_mockup_path: str):
     if not os.path.exists(transparent_png_path):
         raise FileNotFoundError(f"Transparent PNG not found: {transparent_png_path}")
 
-    _ensure_backgrounds()
+    os.makedirs(BG_DIR, exist_ok=True)
 
     # ── Pick a random background ───────────────────────────────────────────
     bg_files = [

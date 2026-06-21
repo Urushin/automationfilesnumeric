@@ -20,8 +20,14 @@ import {
   Loader2,
   ChevronRight,
   X,
+  ChevronDown,
+  ChevronUp,
+  Check,
 } from "lucide-react";
 import FileUpload from "@/components/FileUpload";
+import PipelineForm from "@/components/PipelineForm";
+import RetouchModal from "@/components/RetouchModal";
+import LiveStreamPanel from "@/components/LiveStreamPanel";
 import { apiUrl, assetUrl } from "@/lib/api";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -50,6 +56,8 @@ interface LiveData {
   description_en:   string | null;
   tags_fr:          string[];
   tags_en:          string[];
+  vision_description?: string | null;
+  dalle_prompt?:       string | null;
 }
 
 const EMPTY_DATA: LiveData = {
@@ -69,6 +77,8 @@ const EMPTY_DATA: LiveData = {
   description_en:   null,
   tags_fr:          [],
   tags_en:          [],
+  vision_description: null,
+  dalle_prompt:       null,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -77,9 +87,15 @@ const EMPTY_DATA: LiveData = {
 export default function CreationPage() {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<"global" | "modular">("global");
+  const [mounted, setMounted] = useState(false);
 
   // ── Global Mode state ──────────────────────────────────────────────────────
   const [globalTheme, setGlobalTheme] = useState("");
+  const [accordionOpen, setAccordionOpen] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // Read ?theme= query param (client-side only — avoids useSearchParams/Suspense issues)
   useEffect(() => {
@@ -99,7 +115,7 @@ export default function CreationPage() {
     convert_cad:    true,
     format_pdf:     true,
     upscale:        true,
-    generate_mockup:true,
+    generate_real_mockup: true,
     package:        true,
     generate_seo:   true,
   });
@@ -114,6 +130,12 @@ export default function CreationPage() {
   const stepCounterRef             = useRef(0);
 
   const esRef = useRef<EventSource | null>(null);
+
+  // ── Quality Gate states ───────────────────────────────────────────────────
+  const [pipelineStep, setPipelineStep] = useState<"idle" | "stencil_gen" | "quality_gate" | "downstream">("idle");
+  const [isRetouchModalOpen, setIsRetouchModalOpen] = useState(false);
+  const [pendingDownstreamParams, setPendingDownstreamParams] = useState<any>(null);
+  const [activeStreamUrl, setActiveStreamUrl] = useState<string | null>(null);
 
   // Recovery SSE: check localStorage for pending creation at mount
   useEffect(() => {
@@ -131,7 +153,7 @@ export default function CreationPage() {
     setTasks(prev => ({ ...prev, [key]: !prev[key] }));
 
   // ── SSE handler ────────────────────────────────────────────────────────────
-  const connectSSE = useCallback((url: string) => {
+  const connectSSE = useCallback((url: string, isStep1: boolean = false) => {
     esRef.current?.close();
     setStreaming(true);
     setDone(false);
@@ -177,7 +199,13 @@ export default function CreationPage() {
 
     es.addEventListener("image_ready", (e: MessageEvent) => {
       const d = JSON.parse(e.data);
-      setLiveData(prev => ({ ...prev, source_png_path: d.source_png_path }));
+      setLiveData(prev => ({
+        ...prev,
+        source_png_path: d.source_png_path,
+        vision_description: d.vision_description || prev.vision_description,
+        dalle_prompt: d.prompt || prev.dalle_prompt
+      }));
+      setActiveStreamUrl(null);
     });
 
     es.addEventListener("vector_ready", (e: MessageEvent) => {
@@ -219,10 +247,17 @@ export default function CreationPage() {
     es.addEventListener("done", (e: MessageEvent) => {
       const d = JSON.parse(e.data);
       setLiveData(prev => ({ ...prev, creation_id: d.creation_id ?? prev.creation_id }));
-      setDone(true);
-      setStreaming(false);
-      setSteps(prev => prev.map(s => ({ ...s, status: "complete" })));
       es.close();
+      setActiveStreamUrl(null);
+      if (isStep1) {
+        setStreaming(false);
+        setPipelineStep("quality_gate");
+        setIsRetouchModalOpen(true);
+      } else {
+        setDone(true);
+        setStreaming(false);
+        setSteps(prev => prev.map(s => ({ ...s, status: "complete" })));
+      }
     });
 
     es.addEventListener("error", (e: MessageEvent) => {
@@ -233,6 +268,7 @@ export default function CreationPage() {
         setError("Connexion SSE interrompue.");
       }
       setStreaming(false);
+      setActiveStreamUrl(null);
       es.close();
     });
 
@@ -245,6 +281,7 @@ export default function CreationPage() {
           if (!done && !error && esRef.current?.readyState !== EventSource.OPEN) {
             setError("Connexion au backend perdue. Vérifiez que le serveur est démarré.");
             setStreaming(false);
+            setActiveStreamUrl(null);
             es.close();
           }
         }, 2000);
@@ -274,32 +311,20 @@ export default function CreationPage() {
       return;
     }
     
-    const url = apiUrl(`/api/pipeline/stream/global?theme=${encodeURIComponent(globalTheme)}&_t=${Date.now()}`);
-    connectSSE(url);
-  };
-
-  // ── Modular submit ─────────────────────────────────────────────────────────
-  const handleModularSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!uploadedFile) return;
-
     setError(null);
     setStreaming(true);
     setDone(false);
     setLiveData(EMPTY_DATA);
+    setPipelineStep("stencil_gen");
 
-    // Check backend health first
-    const backendUp = await checkBackendHealth();
-    if (!backendUp) {
-      setError("Impossible de contacter le backend. Vérifiez que le serveur est démarré (python run.py dans le dossier backend/).");
-      setStreaming(false);
-      return;
-    }
-
-    // 1. Upload file first
     const fd = new FormData();
-    fd.append("file", uploadedFile);
-    fd.append("theme", modularTheme || "Fichier Importé");
+    fd.append("theme", globalTheme);
+    fd.append("bundle_size", "4");
+    fd.append("design_style", "classic");
+    fd.append("source_type", "text_prompt");
+    fd.append("output_assembled", "true");
+    fd.append("output_split", "false");
+    fd.append("strict_fidelity", "true");
 
     let creationId: number;
     try {
@@ -318,23 +343,188 @@ export default function CreationPage() {
       return;
     }
 
-    // 2. Connect to modular SSE stream
-    const params = new URLSearchParams({
-      creation_id:      String(creationId),
-      theme:            modularTheme || "",
-      vectorize:        String(tasks.vectorize),
-      convert_cad:      String(tasks.convert_cad),
-      format_pdf:       String(tasks.format_pdf),
-      upscale:          String(tasks.upscale),
-      generate_mockup:  String(tasks.generate_mockup),
-      package:          String(tasks.package),
-      generate_seo:     String(tasks.generate_seo),
+    setPendingDownstreamParams({
+      theme:                globalTheme,
+      vectorize:            true,
+      convert_cad:          true,
+      format_pdf:           true,
+      upscale:              true,
+      generate_real_mockup: true,
+      use_ai_mockup:        true,
+      package:              true,
+      generate_seo:         true,
+      design_style:         "classic",
+      source_type:          "text_prompt",
+      output_assembled:     true,
+      output_split:         false,
+      strict_fidelity:      true
     });
-    connectSSE(apiUrl(`/api/pipeline/stream/modular?${params.toString()}&_t=${Date.now()}`));
+
+    const params = new URLSearchParams({
+      creation_id:          String(creationId),
+      theme:                globalTheme,
+      generate_ai_stencil:  "true",
+      vectorize:            "false",
+      convert_cad:          "false",
+      format_pdf:           "false",
+      upscale:              "false",
+      generate_real_mockup: "false",
+      use_ai_mockup:        "false",
+      package:              "false",
+      generate_seo:         "false",
+      design_style:         "classic",
+      source_type:          "text_prompt",
+      output_assembled:     "true",
+      output_split:         "false",
+      strict_fidelity:      "true"
+    });
+
+    setActiveStreamUrl(apiUrl(`/api/pipeline/stream/image?prompt=${encodeURIComponent(globalTheme)}`));
+    connectSSE(apiUrl(`/api/pipeline/stream/modular?${params.toString()}&_t=${Date.now()}`), true);
+  };
+
+  // ── Modular submit ─────────────────────────────────────────────────────────
+  const handleModularSubmit = async (formPayload: any) => {
+    const {
+      files: formFiles,
+      theme: formTheme,
+      bundleSize: formBundleSize,
+      designStyle: formDesignStyle,
+      sourceType: formSourceType,
+      sourceIsMultiElement: formSourceIsMultiElement,
+      outputAssembled: formOutputAssembled,
+      outputSplit: formOutputSplit,
+      strictFidelity: formStrictFidelity,
+      nImages: formNImages,
+      options: formOptions,
+    } = formPayload;
+
+    setError(null);
+    setStreaming(true);
+    setDone(false);
+    setLiveData(EMPTY_DATA);
+    setPipelineStep("stencil_gen");
+
+    // Check backend health first
+    const backendUp = await checkBackendHealth();
+    if (!backendUp) {
+      setError("Impossible de contacter le backend. Vérifiez que le serveur est démarré (python run.py dans le dossier backend/).");
+      setStreaming(false);
+      return;
+    }
+
+    // 1. Upload files first
+    const fd = new FormData();
+    formFiles.forEach((f: File) => fd.append("files", f));
+    fd.append("theme", formTheme || "Fichier Importé");
+    fd.append("bundle_size", formBundleSize.toString());
+    fd.append("design_style", formDesignStyle);
+    fd.append("source_type", formSourceType);
+    fd.append("source_is_multi_element", formSourceIsMultiElement);
+    fd.append("output_assembled", formOutputAssembled ? "true" : "false");
+    fd.append("output_split", formOutputSplit ? "true" : "false");
+    fd.append("strict_fidelity", formStrictFidelity ? "true" : "false");
+
+    let creationId: number;
+    try {
+      const res = await fetch(apiUrl("/api/pipeline/upload"), { method: "POST", body: fd });
+      if (!res.ok) throw new Error((await res.json()).detail || "Upload échoué.");
+      const data = await res.json();
+      creationId = data.id;
+      setLiveData(prev => ({
+        ...prev,
+        creation_id: creationId,
+        source_png_path: data.source_png_path,
+      }));
+    } catch (err: any) {
+      setError(err.message);
+      setStreaming(false);
+      return;
+    }
+
+     // 2. Save pending modular parameters
+    setPendingDownstreamParams({
+      theme:                formTheme || "",
+      vectorize:            formOptions.removeWhiteBackground || formOptions.vectorize,
+      convert_cad:          formOptions.convert_cad,
+      format_pdf:           formOptions.format_pdf,
+      upscale:              formOptions.upscale,
+      generate_real_mockup: formOptions.generate_real_mockup,
+      use_ai_mockup:        formOptions.use_ai_mockup,
+      apply_tp_overlay:     formOptions.apply_tp_overlay,
+      package:              formOptions.package,
+      generate_seo:         formOptions.generate_seo,
+      design_style:         formDesignStyle,
+      source_type:          formSourceType,
+      output_assembled:     formOutputAssembled,
+      output_split:         formOutputSplit,
+      strict_fidelity:      formStrictFidelity,
+      n_images:             formNImages || 1,
+      mockup_styles:        formPayload.mockupStyles || ["classic_living_room"]
+    });
+
+    // 3. Connect to modular SSE stream for Step 1
+    const isAiGen = formSourceType === "text_prompt" || formSourceType === "raw_image";
+    const params = new URLSearchParams({
+      creation_id:          String(creationId),
+      theme:                formTheme || "",
+      generate_ai_stencil:  isAiGen ? "true" : "false",
+      vectorize:            "false",
+      convert_cad:          "false",
+      format_pdf:           "false",
+      upscale:              "false",
+      generate_real_mockup: "false",
+      use_ai_mockup:        "false",
+      apply_tp_overlay:     "false",
+      package:              "false",
+      generate_seo:         "false",
+      design_style:         formDesignStyle,
+      source_type:          formSourceType,
+      output_assembled:     String(formOutputAssembled),
+      output_split:         String(formOutputSplit),
+      strict_fidelity:      String(formStrictFidelity),
+      n_images:             String(formNImages || 1),
+      mockup_styles:        JSON.stringify(formPayload.mockupStyles || ["classic_living_room"])
+    });
+
+    if (isAiGen) {
+      setActiveStreamUrl(apiUrl(`/api/pipeline/stream/image?prompt=${encodeURIComponent(formTheme || "Fichier Importé")}`));
+    }
+    connectSSE(apiUrl(`/api/pipeline/stream/modular?${params.toString()}&_t=${Date.now()}`), true);
+  };
+
+  const resumePipelineAfterValidation = async () => {
+    if (!liveData.creation_id || !pendingDownstreamParams) return;
+    
+    setIsRetouchModalOpen(false);
+    setPipelineStep("downstream");
+    setStreaming(true);
+
+    const params = new URLSearchParams({
+      creation_id:          String(liveData.creation_id),
+      theme:                pendingDownstreamParams.theme || "",
+      generate_ai_stencil:  "false",
+      vectorize:            String(pendingDownstreamParams.vectorize),
+      convert_cad:          String(pendingDownstreamParams.convert_cad),
+      format_pdf:           String(pendingDownstreamParams.format_pdf),
+      upscale:              String(pendingDownstreamParams.upscale),
+      generate_real_mockup: String(pendingDownstreamParams.generate_real_mockup),
+      use_ai_mockup:        String(pendingDownstreamParams.use_ai_mockup),
+      apply_tp_overlay:     String(pendingDownstreamParams.apply_tp_overlay),
+      package:              String(pendingDownstreamParams.package),
+      generate_seo:         String(pendingDownstreamParams.generate_seo),
+      design_style:         pendingDownstreamParams.design_style || "classic",
+      source_type:          pendingDownstreamParams.source_type || "text_prompt",
+      output_assembled:     String(pendingDownstreamParams.output_assembled),
+      output_split:         String(pendingDownstreamParams.output_split),
+      strict_fidelity:      String(pendingDownstreamParams.strict_fidelity),
+      mockup_styles:        JSON.stringify(pendingDownstreamParams.mockup_styles || ["classic_living_room"])
+    });
+
+    connectSSE(apiUrl(`/api/pipeline/stream/modular?${params.toString()}&_t=${Date.now()}`), false);
   };
 
   const isGlobalDisabled  = !globalTheme.trim() || streaming;
-  const isModularDisabled = !uploadedFile || streaming || (tasks.generate_seo && !modularTheme.trim());
 
   // ── Etsy publish guardrail ─────────────────────────────────────────────────
   const canPublish = !!(
@@ -425,7 +615,7 @@ export default function CreationPage() {
               </div>
               <button
                 type="submit"
-                disabled={isGlobalDisabled}
+                disabled={!mounted ? false : isGlobalDisabled}
                 className="glow-btn w-full flex items-center justify-center space-x-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white py-3.5 font-bold transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Wand2 className="h-4 w-4" />
@@ -434,69 +624,13 @@ export default function CreationPage() {
               </button>
             </form>
           ) : (
-            /* MODE B */
-            <form onSubmit={handleModularSubmit} className="glass-panel rounded-2xl p-6 space-y-6">
-              <div className="space-y-2 text-left">
-                <label className="text-sm font-bold text-slate-200">Image Source (PNG)</label>
-                <FileUpload onFileSelect={setUploadedFile} />
-              </div>
-
-              <div className="space-y-1 text-left">
-                <div className="flex items-center justify-between">
-                  <label className="text-sm font-bold text-slate-200">Thème / Description courte</label>
-                  {tasks.generate_seo && (
-                    <span className="text-[10px] font-bold text-rose-400 uppercase tracking-wide">Obligatoire pour le SEO</span>
-                  )}
-                </div>
-                <input
-                  type="text"
-                  placeholder="Ex: Tête de Cerf Mandala"
-                  value={modularTheme}
-                  onChange={e => setModularTheme(e.target.value)}
-                  className="w-full rounded-lg px-4 py-2.5 text-sm glass-input placeholder:text-slate-600"
-                />
-              </div>
-
-              <div className="space-y-2 text-left">
-                <label className="text-sm font-bold text-slate-200">Tâches à exécuter</label>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-1">
-                  {(Object.entries({
-                    vectorize:       "Vectorisation (PNG → SVG)",
-                    convert_cad:     "Conversion CAO (SVG → DXF)",
-                    format_pdf:      "Format Impression (→ PDF)",
-                    upscale:         "Upscaling transparent x3",
-                    generate_mockup: "Création de Mockup",
-                    package:         "Package client (.ZIP)",
-                    generate_seo:    "Rédiger les textes SEO",
-                  }) as [keyof typeof tasks, string][]).map(([key, label]) => (
-                    <button
-                      key={key}
-                      type="button"
-                      onClick={() => toggleTask(key)}
-                      className={`flex items-center space-x-2.5 p-2.5 rounded-xl border text-left text-xs font-semibold transition ${
-                        tasks[key]
-                          ? "bg-slate-900 border-indigo-500/40 text-slate-200"
-                          : "bg-slate-900/30 border-slate-800/60 text-slate-500"
-                      }`}
-                    >
-                      {tasks[key]
-                        ? <CheckSquare className="h-4 w-4 text-indigo-400 flex-shrink-0" />
-                        : <Square className="h-4 w-4 flex-shrink-0" />}
-                      <span>{label}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <button
-                type="submit"
-                disabled={isModularDisabled}
-                className="glow-btn w-full flex items-center justify-center space-x-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white py-3.5 font-bold transition disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <Play className="h-4 w-4" />
-                <span>Exécuter la sélection</span>
-              </button>
-            </form>
+            <div className="w-full text-left">
+              <PipelineForm
+                onGenerate={handleModularSubmit}
+                loading={streaming}
+                initialTheme={modularTheme}
+              />
+            </div>
           )}
         </div>
       )}
@@ -585,6 +719,45 @@ export default function CreationPage() {
                 </ul>
               </div>
             )}
+
+            {/* Collapsible Accordion section "📋 Mode Manuel & Balises de Fichiers" */}
+            <div className="glass-panel rounded-2xl p-4 border border-slate-800/40 text-left">
+              <button
+                onClick={() => setAccordionOpen(!accordionOpen)}
+                className="w-full flex items-center justify-between text-slate-300 hover:text-white font-bold text-sm transition py-1 cursor-pointer"
+              >
+                <span className="flex items-center gap-2">📋 Mode Manuel & Balises de Fichiers</span>
+                {accordionOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              </button>
+              
+              {accordionOpen && (
+                <div className="space-y-3 mt-3 animate-in fade-in slide-in-from-top-2 duration-200">
+                  <CopyField
+                    label="Texte Prompt Vision / Description"
+                    value={liveData.vision_description || ''}
+                  />
+                  <CopyField
+                    label="Prompt Final DALL-E 3"
+                    value={liveData.dalle_prompt || ''}
+                  />
+                  <CopyField
+                    label="Balises Tags Etsy Générées (FR/EN)"
+                    value={liveData.tags_fr.length > 0 || liveData.tags_en.length > 0 
+                      ? `Tags FR: ${liveData.tags_fr.join(", ")}\n\nTags EN: ${liveData.tags_en.join(", ")}`
+                      : ''
+                    }
+                  />
+                  <CopyField
+                    label="Chemin d'accès Stockage Asset Source"
+                    value={liveData.source_png_path || ''}
+                  />
+                  <CopyField
+                    label="Chemin d'accès Stockage Asset Transparent"
+                    value={liveData.upscale_png_path || liveData.svg_path || ''}
+                  />
+                </div>
+              )}
+            </div>
           </div>
 
           {/* RIGHT: Live result panels */}
@@ -746,6 +919,27 @@ export default function CreationPage() {
           </div>
         </div>
       )}
+
+      {liveData.creation_id && liveData.source_png_path && (
+        <RetouchModal
+          isOpen={isRetouchModalOpen}
+          creationId={liveData.creation_id}
+          imageUrl={assetUrl(liveData.source_png_path)}
+          onClose={() => {
+            setIsRetouchModalOpen(false);
+            setStreaming(false);
+            setPipelineStep("idle");
+          }}
+          onValidate={resumePipelineAfterValidation}
+        />
+      )}
+
+      {activeStreamUrl && (
+        <LiveStreamPanel 
+          streamUrl={activeStreamUrl} 
+          onStreamComplete={() => setActiveStreamUrl(null)} 
+        />
+      )}
     </div>
   );
 }
@@ -829,6 +1023,50 @@ function SEOField({ label, value, maxLen }: { label: string; value: string; maxL
       <p className={`text-xs px-3 py-2 rounded-lg ${over ? "bg-rose-950/30 text-rose-300 border border-rose-500/20" : "bg-slate-900/40 text-slate-200"}`}>
         {value}
       </p>
+    </div>
+  );
+}
+
+interface CopyFieldProps {
+  label: string;
+  value: string;
+}
+
+function CopyField({ label, value }: CopyFieldProps) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    if (!value) return;
+    navigator.clipboard.writeText(value);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="flex flex-col gap-1.5 bg-slate-950/40 p-3 rounded-xl border border-slate-800/55 text-left">
+      <div className="flex justify-between items-center">
+        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{label}</span>
+        <button
+          onClick={handleCopy}
+          disabled={!value}
+          className="text-[10px] font-bold text-indigo-400 hover:text-indigo-300 transition flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+        >
+          {copied ? (
+            <>
+              <Check className="h-3 w-3 text-emerald-400" />
+              <span className="text-emerald-400">Copié!</span>
+            </>
+          ) : (
+            <span>Copier</span>
+          )}
+        </button>
+      </div>
+      <textarea
+        readOnly
+        value={value || "En attente de génération..."}
+        className="w-full bg-transparent text-xs text-slate-300 outline-none resize-none font-mono mt-1"
+        rows={value && value.length > 80 ? 3 : 1}
+      />
     </div>
   );
 }

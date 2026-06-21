@@ -9,6 +9,15 @@ class SettingBase(BaseModel):
     openai_key: Optional[str] = None
     mistral_key: Optional[str] = None
     gemini_key: Optional[str] = None
+    banana_key: Optional[str] = None
+    replicate_key: Optional[str] = None
+    openrouter_key: Optional[str] = None
+    huggingface_key: Optional[str] = None
+    anthropic_key: Optional[str] = None
+    stability_key: Optional[str] = None
+
+    image_ai_provider: str = "banana"
+    text_ai_provider: str = "gemini-2.0-flash-lite"
     etsy_client_id: Optional[str] = None
     etsy_client_secret: Optional[str] = None
     etsy_oauth_token: Optional[str] = None
@@ -18,6 +27,11 @@ class SettingBase(BaseModel):
     potrace_path: str = "potrace"
     inkscape_path: str = "inkscape"
     mockup_background_path: Optional[str] = None
+
+    prompt_seo: Optional[str] = None
+    prompt_image_generation: Optional[str] = None
+    prompt_inpainting: Optional[str] = None
+    prompt_trend_scraping: Optional[str] = None
 
 class SettingUpdate(SettingBase):
     pass
@@ -52,6 +66,12 @@ class CreationUpdate(BaseModel):
     etsy_listing_id: Optional[str] = None
     price: Optional[float] = None
     quantity: Optional[int] = None
+    selected_images_raw: Optional[str] = None
+    bundle_size: Optional[int] = None
+    mockup_path: Optional[str] = None
+    real_mockup_path: Optional[str] = None
+    png_paths_raw: Optional[str] = None
+    source_png_variants_raw: Optional[str] = None
 
 class CreationResponse(CreationBase):
     id: int
@@ -64,6 +84,7 @@ class CreationResponse(CreationBase):
     pdf_path: Optional[str] = None
     upscale_png_path: Optional[str] = None
     mockup_path: Optional[str] = None
+    real_mockup_path: Optional[str] = None
     zip_path: Optional[str] = None
     is_published_etsy: bool = False
     etsy_listing_id: Optional[str] = None
@@ -76,6 +97,14 @@ class CreationResponse(CreationBase):
     bundle_size: Optional[int] = 1
     connectivity_warnings: Optional[int] = 0
     compliance_warnings: Optional[str] = None     # JSON string
+    source_type: Optional[str] = "text_prompt"
+    png_paths: Optional[List[str]] = []
+    svg_paths: Optional[List[str]] = []
+    pdf_paths: Optional[List[str]] = []
+    pipeline_status: Optional[str] = None          # JSON status of each component [NEW]
+    selected_images_raw: Optional[str] = None
+    source_png_variants_raw: Optional[str] = None
+    source_png_variants: Optional[List[str]] = []
 
     class Config:
         from_attributes = True
@@ -86,16 +115,26 @@ class CreationResponse(CreationBase):
 # ─────────────────────────────────────────────────────────────────────────────
 class GlobalPipelineRequest(BaseModel):
     theme: str
+    image_ai_provider: Optional[str] = "openai"
+    text_ai_provider: Optional[str] = "gemini"
+    design_style: Optional[str] = "classic"
 
 class ModularPipelineRequest(BaseModel):
     theme: Optional[str] = None
+    generate_ai_stencil: bool = False
     vectorize: bool = False
     convert_cad: bool = False
     format_pdf: bool = False
     upscale: bool = False
     package: bool = False
     generate_seo: bool = False
-    generate_mockup: bool = False
+    generate_real_mockup: bool = False
+    use_ai_mockup: bool = False
+    apply_tp_overlay: bool = False
+    image_ai_provider: Optional[str] = "openai"
+    text_ai_provider: Optional[str] = "gemini"
+    design_style: Optional[str] = "classic"
+    source_type: Optional[str] = "text_prompt"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -140,11 +179,11 @@ class HealthResponse(BaseModel):
 class IdeaBankItem(BaseModel):
     id: int
     title: str
-    description: Optional[str] = None
     thumbnail_url: Optional[str] = None
     source_url: Optional[str] = None
     trend_score: int = 50
     category: Optional[str] = None
+    section: str = "trending"
     detected_at: datetime
     is_injected: bool = False
     keywords: Optional[str] = None   # JSON string
@@ -155,10 +194,13 @@ class IdeaBankItem(BaseModel):
 
 class IdeaBankCreate(BaseModel):
     title: str
-    description: Optional[str] = None
     thumbnail_url: Optional[str] = None
     source_url: Optional[str] = None
     trend_score: int = 50
     category: Optional[str] = None
     keywords: Optional[str] = None
     source: Optional[str] = "manual"
+
+class PublishRequest(BaseModel):
+    selected_assets: Optional[List[str]] = None
+

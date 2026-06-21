@@ -1,518 +1,523 @@
 "use client";
 
-import { useState, useEffect, Suspense } from "react";
-import { useSearchParams } from "next/navigation";
-import { 
-  Key, 
-  Settings as SettingsIcon, 
-  Terminal, 
-  Tag, 
-  CheckCircle2, 
-  XCircle, 
-  RefreshCw, 
-  AlertCircle, 
-  Link2 
-} from "lucide-react";
+import React, { useEffect, useState } from "react";
 import { apiUrl } from "@/lib/api";
+import Link from "next/link";
+import {
+  Save, Settings as SettingsIcon, Image as ImageIcon,
+  FileText, Wrench, Zap, Star, Gift, ChevronDown, Store,
+} from "lucide-react";
 
-interface BinaryTestResult {
-  status: "OK" | "FAILED";
-  path: string;
-  error: string | null;
-}
+// ── Generation profile presets ──────────────────────────────────────────────
+const PROFILES = {
+  pro: {
+    label: "🎨 Mode Studio (Pro)",
+    description: "Meilleure qualité — Claude Haiku + DALL-E 3 (pro)",
+    image_ai_provider: "dall-e-3",
+    text_ai_provider: "claude-3-5-haiku",
+  },
+  eco: {
+    label: "⚡ Mode Artisan (Rentable)",
+    description: "Équilibré — GPT-4o-mini + Flux Pro (eco)",
+    image_ai_provider: "black-forest-labs-flux-pro",
+    text_ai_provider: "gpt-4o-mini",
+  },
+  free: {
+    label: "🆓 Mode Gratuit",
+    description: "Quota Free — Gemini Flash + HF FLUX Schnell (free)",
+    image_ai_provider: "huggingface-flux-free",
+    text_ai_provider: "gemini-2.0-flash",
+  },
+};
 
-interface BinaryResults {
-  potrace: BinaryTestResult;
-  inkscape: BinaryTestResult;
-}
+const INPUT_CLS =
+  "p-3 rounded-lg bg-slate-800 text-white border border-slate-700 outline-none focus:border-indigo-500 transition";
 
-function SettingsContent() {
-  const searchParams = useSearchParams();
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [testingBinaries, setTestingBinaries] = useState(false);
-  const [binaryResults, setBinaryResults] = useState<BinaryResults | null>(null);
-  const [notification, setNotification] = useState<{ type: "success" | "error"; message: string } | null>(null);
-
-  // Form states
-  const [openaiKey, setOpenaiKey] = useState("");
-  const [mistralKey, setMistralKey] = useState("");
-  const [geminiKey, setGeminiKey] = useState("");
-  const [etsyClientId, setEtsyClientId] = useState("");
-  const [etsyClientSecret, setEtsyClientSecret] = useState("");
-  const [etsyOauthToken, setEtsyOauthToken] = useState("");
-  const [defaultPrice, setDefaultPrice] = useState(3.0);
-  const [defaultQuantity, setDefaultQuantity] = useState(999);
-  const [defaultStatus, setDefaultStatus] = useState("draft");
-  const [potracePath, setPotracePath] = useState("potrace");
-  const [inkscapePath, setInkscapePath] = useState("inkscape");
-
-  // Fetch Settings
-  useEffect(() => {
-    fetchSettings();
-    
-    // Check if redirect query param says success
-    if (searchParams.get("etsy_connect") === "success") {
-      setNotification({
-        type: "success",
-        message: "Votre compte Etsy a été connecté avec succès !"
-      });
-    }
-  }, [searchParams]);
-
-  const fetchSettings = async () => {
-    try {
-      setLoading(true);
-      const res = await fetch(apiUrl("/api/settings"));
-      if (!res.ok) throw new Error("Failed to load settings");
-      const data = await res.json();
-      
-      setOpenaiKey(data.openai_key || "");
-      setMistralKey(data.mistral_key || "");
-      setGeminiKey(data.gemini_key || "");
-      setEtsyClientId(data.etsy_client_id || "");
-      setEtsyClientSecret(data.etsy_client_secret || "");
-      setEtsyOauthToken(data.etsy_oauth_token || "");
-      setDefaultPrice(data.default_price);
-      setDefaultQuantity(data.default_quantity);
-      setDefaultStatus(data.default_status);
-      setPotracePath(data.potrace_path || "potrace");
-      setInkscapePath(data.inkscape_path || "inkscape");
-    } catch (err: any) {
-      setNotification({ type: "error", message: err.message || "Erreur de chargement" });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleSave = async (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      setSaving(true);
-      const res = await fetch(apiUrl("/api/settings"), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          openai_key: openaiKey,
-          mistral_key: mistralKey,
-          gemini_key: geminiKey,
-          etsy_client_id: etsyClientId,
-          etsy_client_secret: etsyClientSecret,
-          default_price: parseFloat(defaultPrice.toString()),
-          default_quantity: parseInt(defaultQuantity.toString()),
-          default_status: defaultStatus,
-          potrace_path: potracePath,
-          inkscape_path: inkscapePath
-        })
-      });
-
-      if (!res.ok) throw new Error("Failed to save settings");
-      setNotification({ type: "success", message: "Configuration enregistrée avec succès !" });
-    } catch (err: any) {
-      setNotification({ type: "error", message: err.message || "Erreur d'enregistrement" });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleEtsyConnect = async () => {
-    if (!etsyClientId) {
-      setNotification({ type: "error", message: "Veuillez d'abord renseigner le Etsy Client ID et enregistrer." });
-      return;
-    }
-    
-    try {
-      // First save settings
-      await fetch(apiUrl("/api/settings"), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          openai_key: openaiKey,
-          mistral_key: mistralKey,
-          gemini_key: geminiKey,
-          etsy_client_id: etsyClientId,
-          etsy_client_secret: etsyClientSecret,
-          default_price: parseFloat(defaultPrice.toString()),
-          default_quantity: parseInt(defaultQuantity.toString()),
-          default_status: defaultStatus,
-          potrace_path: potracePath,
-          inkscape_path: inkscapePath
-        })
-      });
-
-      const res = await fetch(apiUrl("/api/etsy/login"));
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.detail || "Failed to generate auth URL");
-      }
-      const data = await res.json();
-      // Redirect user to Etsy OAuth Login page
-      window.location.href = data.url;
-    } catch (err: any) {
-      setNotification({ type: "error", message: err.message || "Erreur de connexion Etsy" });
-    }
-  };
-
-  const handleEtsyDisconnect = async () => {
-    try {
-      const res = await fetch(apiUrl("/api/settings"), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ etsy_oauth_token: "" })
-      });
-      if (!res.ok) throw new Error("Failed to clear Etsy connection");
-      setEtsyOauthToken("");
-      setNotification({ type: "success", message: "Compte Etsy déconnecté avec succès." });
-    } catch (err: any) {
-      setNotification({ type: "error", message: err.message });
-    }
-  };
-
-  const testBinaries = async () => {
-    try {
-      setTestingBinaries(true);
-      setBinaryResults(null);
-      const res = await fetch(apiUrl("/api/settings/test-binaries"), {
-        method: "POST"
-      });
-      if (!res.ok) throw new Error("Failed to test binaries");
-      const data = await res.json();
-      setBinaryResults(data);
-    } catch (err: any) {
-      setNotification({ type: "error", message: err.message || "Erreur de test CLI" });
-    } finally {
-      setTestingBinaries(false);
-    }
-  };
-
-  const isEtsyConnected = etsyOauthToken && 
-    etsyOauthToken !== "" && 
-    !etsyOauthToken.startsWith("temp:");
-
-  if (loading) {
-    return (
-      <div className="flex h-[60vh] flex-col items-center justify-center space-y-4">
-        <RefreshCw className="h-10 w-10 text-indigo-500 animate-spin" />
-        <p className="text-slate-400">Chargement de la configuration...</p>
-      </div>
-    );
-  }
-
+function Section({
+  icon,
+  title,
+  children,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  children: React.ReactNode;
+}) {
   return (
-    <div className="mx-auto max-w-4xl space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-slate-100 to-slate-400 bg-clip-text text-transparent">
-            Configuration
-          </h1>
-          <p className="text-slate-400">Gérez vos clés d&apos;API, vos préférences Etsy et vérifiez vos dépendances locales.</p>
-        </div>
-      </div>
+    <section>
+      <h2 className="text-xl font-semibold text-white mb-4 flex items-center gap-2">
+        {icon}
+        {title}
+      </h2>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">{children}</div>
+    </section>
+  );
+}
 
-      {notification && (
-        <div className={`p-4 rounded-xl flex items-start space-x-3 border ${
-          notification.type === "success" 
-            ? "bg-emerald-950/40 text-emerald-300 border-emerald-500/20" 
-            : "bg-rose-950/40 text-rose-300 border-rose-500/20"
-        }`}>
-          {notification.type === "success" ? (
-            <CheckCircle2 className="h-5 w-5 text-emerald-400 flex-shrink-0 mt-0.5" />
-          ) : (
-            <AlertCircle className="h-5 w-5 text-rose-400 flex-shrink-0 mt-0.5" />
-          )}
-          <div className="flex-1 text-sm font-medium">{notification.message}</div>
-          <button 
-            onClick={() => setNotification(null)}
-            className="text-xs font-bold hover:underline opacity-80"
-          >
-            Fermer
-          </button>
-        </div>
-      )}
-
-      <form onSubmit={handleSave} className="space-y-6">
-        {/* API Keys Panel */}
-        <div className="glass-panel rounded-2xl p-6 space-y-4">
-          <div className="flex items-center space-x-2 border-b border-slate-800 pb-3">
-            <Key className="h-5 w-5 text-indigo-400" />
-            <h2 className="text-lg font-bold">Clés d&apos;API d&apos;Intelligence Artificielle</h2>
-          </div>
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">OpenAI API Key (DALL-E 3)</label>
-              <input 
-                type="password" 
-                placeholder="sk-..." 
-                value={openaiKey}
-                onChange={(e) => setOpenaiKey(e.target.value)}
-                className="w-full rounded-lg px-4 py-2 text-sm glass-input"
-              />
-            </div>
-            
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Gemini API Key (SEO)</label>
-              <input 
-                type="password" 
-                placeholder="AIzaSy..." 
-                value={geminiKey}
-                onChange={(e) => setGeminiKey(e.target.value)}
-                className="w-full rounded-lg px-4 py-2 text-sm glass-input"
-              />
-            </div>
-            
-            <div className="space-y-1 md:col-span-2">
-              <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Mistral AI API Key (SEO)</label>
-              <input 
-                type="password" 
-                placeholder="Mistral API Key" 
-                value={mistralKey}
-                onChange={(e) => setMistralKey(e.target.value)}
-                className="w-full rounded-lg px-4 py-2 text-sm glass-input"
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* Etsy API Setup */}
-        <div className="glass-panel rounded-2xl p-6 space-y-4">
-          <div className="flex items-center space-x-2 border-b border-slate-800 pb-3">
-            <Link2 className="h-5 w-5 text-rose-400" />
-            <h2 className="text-lg font-bold">Intégration Marketplace Etsy</h2>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Etsy Client ID (Keystring)</label>
-              <input 
-                type="text" 
-                placeholder="Identifiant de l'application Etsy" 
-                value={etsyClientId}
-                onChange={(e) => setEtsyClientId(e.target.value)}
-                className="w-full rounded-lg px-4 py-2 text-sm glass-input"
-              />
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Etsy Client Secret (Shared Secret)</label>
-              <input 
-                type="password" 
-                placeholder="Clé secrète Etsy" 
-                value={etsyClientSecret}
-                onChange={(e) => setEtsyClientSecret(e.target.value)}
-                className="w-full rounded-lg px-4 py-2 text-sm glass-input"
-              />
-            </div>
-          </div>
-
-          <div className="bg-slate-900/60 rounded-xl p-4 flex flex-col md:flex-row items-center justify-between border border-slate-800/40">
-            <div className="mb-4 md:mb-0">
-              <div className="text-sm font-semibold">Statut de la connexion</div>
-              <div className="text-xs text-slate-400 mt-0.5">
-                Authentification OAuth 2.0 PKCE sécurisée pour les fiches produits.
-              </div>
-            </div>
-
-            {isEtsyConnected ? (
-              <div className="flex items-center space-x-3">
-                <span className="flex items-center space-x-1 text-xs px-2.5 py-1 rounded-full bg-emerald-950/60 text-emerald-400 border border-emerald-500/25">
-                  <CheckCircle2 className="h-3 w-3" />
-                  <span>Connecté à Etsy</span>
-                </span>
-                <button
-                  type="button"
-                  onClick={handleEtsyDisconnect}
-                  className="text-xs font-semibold text-rose-400 hover:text-rose-300 transition"
-                >
-                  Déconnecter
-                </button>
-              </div>
-            ) : (
-              <div className="flex items-center space-x-3">
-                <span className="text-xs px-2.5 py-1 rounded-full bg-slate-800 text-slate-400 border border-slate-700">
-                  Déconnecté
-                </span>
-                <button
-                  type="button"
-                  onClick={handleEtsyConnect}
-                  className="flex items-center space-x-1 text-xs font-semibold bg-rose-600 hover:bg-rose-500 text-white px-3 py-1.5 rounded-lg transition"
-                >
-                  <span>Connecter mon compte</span>
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Default Etsy Listing Settings */}
-        <div className="glass-panel rounded-2xl p-6 space-y-4">
-          <div className="flex items-center space-x-2 border-b border-slate-800 pb-3">
-            <Tag className="h-5 w-5 text-indigo-400" />
-            <h2 className="text-lg font-bold">Valeurs par défaut des Fiches Produits</h2>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Prix de vente par défaut (€)</label>
-              <input 
-                type="number" 
-                step="0.01" 
-                value={defaultPrice}
-                onChange={(e) => setDefaultPrice(parseFloat(e.target.value))}
-                className="w-full rounded-lg px-4 py-2 text-sm glass-input"
-              />
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Quantité disponible</label>
-              <input 
-                type="number" 
-                value={defaultQuantity}
-                onChange={(e) => setDefaultQuantity(parseInt(e.target.value))}
-                className="w-full rounded-lg px-4 py-2 text-sm glass-input"
-              />
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Statut de la fiche produit</label>
-              <select 
-                value={defaultStatus}
-                onChange={(e) => setDefaultStatus(e.target.value)}
-                className="w-full rounded-lg px-4 py-2 text-sm glass-input"
-              >
-                <option value="draft">Brouillon (Draft)</option>
-                <option value="active">Active (Publication directe)</option>
-              </select>
-            </div>
-          </div>
-        </div>
-
-        {/* Local CLI Binary Settings */}
-        <div className="glass-panel rounded-2xl p-6 space-y-4">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-            <div className="flex items-center space-x-2">
-              <Terminal className="h-5 w-5 text-emerald-400" />
-              <h2 className="text-lg font-bold">Dépendances Systèmes (CLI)</h2>
-            </div>
-            <button
-              type="button"
-              onClick={testBinaries}
-              disabled={testingBinaries}
-              className="flex items-center space-x-1 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-lg disabled:opacity-50 transition"
-            >
-              {testingBinaries && <RefreshCw className="h-3.5 w-3.5 animate-spin" />}
-              <span>Tester les binaires</span>
-            </button>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Chemin Executable Potrace</label>
-              <input 
-                type="text" 
-                placeholder="potrace" 
-                value={potracePath}
-                onChange={(e) => setPotracePath(e.target.value)}
-                className="w-full rounded-lg px-4 py-2 text-sm glass-input"
-              />
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Chemin Executable Inkscape</label>
-              <input 
-                type="text" 
-                placeholder="/Applications/Inkscape.app/Contents/MacOS/inkscape" 
-                value={inkscapePath}
-                onChange={(e) => setInkscapePath(e.target.value)}
-                className="w-full rounded-lg px-4 py-2 text-sm glass-input"
-              />
-            </div>
-          </div>
-
-          {binaryResults && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-2">
-              {/* Potrace Diagnostic Result */}
-              <div className={`p-4 rounded-xl border flex flex-col justify-between ${
-                binaryResults.potrace.status === "OK" 
-                  ? "bg-emerald-950/20 text-emerald-300 border-emerald-500/20" 
-                  : "bg-rose-950/20 text-rose-300 border-rose-500/20"
-              }`}>
-                <div>
-                  <div className="flex items-center space-x-2 font-bold text-sm">
-                    {binaryResults.potrace.status === "OK" ? (
-                      <CheckCircle2 className="h-4.5 w-4.5 text-emerald-400" />
-                    ) : (
-                      <XCircle className="h-4.5 w-4.5 text-rose-400" />
-                    )}
-                    <span>Potrace CLI : {binaryResults.potrace.status}</span>
-                  </div>
-                  {binaryResults.potrace.error && (
-                    <p className="text-xs opacity-75 mt-1.5 leading-relaxed">{binaryResults.potrace.error}</p>
-                  )}
-                </div>
-                <div className="text-[10px] text-slate-500 mt-2 truncate font-mono">
-                  Chemin: {binaryResults.potrace.path}
-                </div>
-              </div>
-
-              {/* Inkscape Diagnostic Result */}
-              <div className={`p-4 rounded-xl border flex flex-col justify-between ${
-                binaryResults.inkscape.status === "OK" 
-                  ? "bg-emerald-950/20 text-emerald-300 border-emerald-500/20" 
-                  : "bg-rose-950/20 text-rose-300 border-rose-500/20"
-              }`}>
-                <div>
-                  <div className="flex items-center space-x-2 font-bold text-sm">
-                    {binaryResults.inkscape.status === "OK" ? (
-                      <CheckCircle2 className="h-4.5 w-4.5 text-emerald-400" />
-                    ) : (
-                      <XCircle className="h-4.5 w-4.5 text-rose-400" />
-                    )}
-                    <span>Inkscape CLI : {binaryResults.inkscape.status}</span>
-                  </div>
-                  {binaryResults.inkscape.error && (
-                    <p className="text-xs opacity-75 mt-1.5 leading-relaxed">{binaryResults.inkscape.error}</p>
-                  )}
-                </div>
-                <div className="text-[10px] text-slate-500 mt-2 truncate font-mono">
-                  Chemin: {binaryResults.inkscape.path}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Submit Actions */}
-        <div className="flex justify-end">
-          <button
-            type="submit"
-            disabled={saving}
-            className="glow-btn inline-flex items-center space-x-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-3 font-semibold transition disabled:opacity-50"
-          >
-            {saving ? (
-              <>
-                <RefreshCw className="h-5 w-5 animate-spin" />
-                <span>Enregistrement...</span>
-              </>
-            ) : (
-              <span>Enregistrer la configuration</span>
-            )}
-          </button>
-        </div>
-      </form>
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <label className="text-sm text-slate-400">{label}</label>
+      {children}
     </div>
   );
 }
 
 export default function SettingsPage() {
-  return (
-    <Suspense fallback={
-      <div className="flex h-[60vh] flex-col items-center justify-center space-y-4">
-        <RefreshCw className="h-10 w-10 text-indigo-500 animate-spin" />
-        <p className="text-slate-400">Chargement de la configuration...</p>
+  const [settings, setSettings] = useState<any>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
+
+  useEffect(() => {
+    fetch(apiUrl("/api/settings"))
+      .then((res) => res.json())
+      .then((data) => {
+        setSettings(data);
+        setLoading(false);
+      });
+  }, []);
+
+  const applyProfile = (key: keyof typeof PROFILES) => {
+    const p = PROFILES[key];
+    setSettings((s: any) => ({
+      ...s,
+      image_ai_provider: p.image_ai_provider,
+      text_ai_provider: p.text_ai_provider,
+    }));
+  };
+
+  const saveSettings = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch(apiUrl("/api/settings"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(settings),
+      });
+      setToast({ msg: res.ok ? "Paramètres sauvegardés ✔" : "Erreur lors de la sauvegarde.", ok: res.ok });
+    } catch {
+      setToast({ msg: "Erreur réseau.", ok: false });
+    } finally {
+      setSaving(false);
+      setTimeout(() => setToast(null), 3500);
+    }
+  };
+
+  if (loading)
+    return (
+      <div className="text-slate-400 p-10 text-center animate-pulse">
+        Chargement des configurations...
       </div>
-    }>
-      <SettingsContent />
-    </Suspense>
+    );
+
+  return (
+    <div className="max-w-4xl mx-auto px-6 py-8">
+      {/* Toast */}
+      {toast && (
+        <div
+          className={`fixed top-5 right-5 z-50 px-5 py-3 rounded-xl font-medium shadow-xl transition-all ${
+            toast.ok ? "bg-emerald-600 text-white" : "bg-red-600 text-white"
+          }`}
+        >
+          {toast.msg}
+        </div>
+      )}
+
+      <div className="flex items-center justify-between mb-8">
+        <h1 className="text-3xl font-bold text-white flex items-center gap-3">
+          <SettingsIcon className="text-indigo-400 h-8 w-8" />
+          Configuration universelle
+        </h1>
+        <Link
+          href="/settings/prompts"
+          className="flex items-center gap-2 px-5 py-2.5 bg-indigo-650 hover:bg-indigo-600 border border-indigo-500/40 text-white font-bold rounded-xl text-xs transition duration-200 shadow-md hover:shadow-indigo-500/10 cursor-pointer select-none"
+        >
+          <FileText className="h-4 w-4 text-indigo-300" />
+          Gérer les Prompts
+        </Link>
+      </div>
+
+      {/* ── Profile presets ─────────────────────────────────────────────── */}
+      <div className="mb-8">
+        <p className="text-sm text-slate-400 mb-3 flex items-center gap-1">
+          <Zap className="h-4 w-4 text-amber-400" /> Profils de génération (applique les providers recommandés)
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {Object.entries(PROFILES).map(([key, p]) => (
+            <button
+              key={key}
+              onClick={() => applyProfile(key as keyof typeof PROFILES)}
+              className="text-left p-4 rounded-xl border border-slate-700 bg-slate-800/60 hover:border-indigo-500 hover:bg-slate-800 transition group"
+            >
+              <div className="font-bold text-white text-base mb-1">{p.label}</div>
+              <div className="text-xs text-slate-400 group-hover:text-slate-300">{p.description}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="space-y-8 bg-slate-900/50 p-8 rounded-2xl border border-slate-800 shadow-xl">
+
+        {/* ── Image providers ───────────────────────────────────────────── */}
+        <Section
+          icon={<ImageIcon className="text-rose-400 h-6 w-6" />}
+          title="Génération d'Images (Pochoirs & Mockups)"
+        >
+          <Field label="Fournisseur d'Image Préféré">
+            <select
+              value={settings.image_ai_provider || "openrouter-flux-free"}
+              onChange={(e) => setSettings({ ...settings, image_ai_provider: e.target.value })}
+              className={INPUT_CLS}
+            >
+              <optgroup label="OpenAI">
+                <option value="dall-e-3">DALL-E 3 ⭐ (haute qualité)</option>
+                <option value="dall-e-2">DALL-E 2</option>
+              </optgroup>
+              <optgroup label="Google">
+                <option value="imagen-3-generate">Imagen 3 Generate</option>
+                <option value="imagen-3-edit">Imagen 3 Edit</option>
+              </optgroup>
+              <optgroup label="Replicate">
+                <option value="black-forest-labs-flux-pro">Flux Pro ⭐ (recommandé)</option>
+                <option value="stable-diffusion-xl-core">SDXL Core</option>
+                <option value="stable-diffusion-3-pro">SD 3 Pro</option>
+                <option value="bria-2.3">Bria 2.3</option>
+              </optgroup>
+              <optgroup label="Hugging Face (Gratuit/économique)">
+                <option value="huggingface-flux-free">HF FLUX.1-schnell (gratuit)</option>
+              </optgroup>
+              <optgroup label="Stability AI">
+                <option value="stability">Stability AI SD3 (Stable Diffusion 3)</option>
+              </optgroup>
+              <optgroup label="Banana / Legacy">
+                <option value="banana">Banana SDXL (img2img)</option>
+              </optgroup>
+            </select>
+          </Field>
+
+          <Field label="Clé API Stability AI (SD3)">
+            <input
+              id="stability_key"
+              type="password"
+              value={settings.stability_key || ""}
+              onChange={(e) => setSettings({ ...settings, stability_key: e.target.value })}
+              placeholder="sk-..."
+              className={INPUT_CLS}
+            />
+          </Field>
+
+          <Field label="Clé API OpenAI (DALL-E)">
+            <input
+              id="openai_key"
+              type="password"
+              value={settings.openai_key || ""}
+              onChange={(e) => setSettings({ ...settings, openai_key: e.target.value })}
+              placeholder="sk-proj-..."
+              className={INPUT_CLS}
+            />
+          </Field>
+
+          <Field label="Clé API Google Gemini / Imagen">
+            <input
+              id="gemini_key_image"
+              type="password"
+              value={settings.gemini_key || ""}
+              onChange={(e) => setSettings({ ...settings, gemini_key: e.target.value })}
+              placeholder="AIzaSy..."
+              className={INPUT_CLS}
+            />
+          </Field>
+
+          <Field label="Clé API Replicate (Flux, SDXL, Bria…)">
+            <input
+              id="replicate_key"
+              type="password"
+              value={settings.replicate_key || ""}
+              onChange={(e) => setSettings({ ...settings, replicate_key: e.target.value })}
+              placeholder="r8_..."
+              className={INPUT_CLS}
+            />
+          </Field>
+
+          <Field label="Clé API OpenRouter">
+            <input
+              id="openrouter_key"
+              type="password"
+              value={settings.openrouter_key || ""}
+              onChange={(e) => setSettings({ ...settings, openrouter_key: e.target.value })}
+              placeholder="sk-or-v1-..."
+              className={INPUT_CLS}
+            />
+          </Field>
+
+          <Field label="Clé API Hugging Face">
+            <input
+              id="huggingface_key"
+              type="password"
+              value={settings.huggingface_key || ""}
+              onChange={(e) => setSettings({ ...settings, huggingface_key: e.target.value })}
+              placeholder="hf_..."
+              className={INPUT_CLS}
+            />
+          </Field>
+
+          <Field label="Clé API Banana (SDXL img2img)">
+            <input
+              id="banana_key"
+              type="password"
+              value={settings.banana_key || ""}
+              onChange={(e) => setSettings({ ...settings, banana_key: e.target.value })}
+              placeholder="sk-..."
+              className={INPUT_CLS}
+            />
+          </Field>
+        </Section>
+
+        <hr className="border-slate-800" />
+
+        {/* ── Text / SEO providers ──────────────────────────────────────── */}
+        <Section
+          icon={<FileText className="text-emerald-400 h-6 w-6" />}
+          title="Génération de Texte & Vision (SEO — litellm)"
+        >
+          <Field label="Fournisseur de Texte/Vision Préféré">
+            <select
+              value={settings.text_ai_provider || "gemini-2.0-flash"}
+              onChange={(e) => setSettings({ ...settings, text_ai_provider: e.target.value })}
+              className={INPUT_CLS}
+            >
+              <optgroup label="Anthropic (Claude)">
+                <option value="claude-3-5-haiku">Claude 3.5 Haiku ⚡ (rapide, économique)</option>
+                <option value="claude-3-5-sonnet">Claude 3.5 Sonnet ⭐ (premium)</option>
+                <option value="claude-3-opus">Claude 3 Opus (puissant)</option>
+              </optgroup>
+              <optgroup label="OpenAI">
+                <option value="gpt-4o">GPT-4o (vision)</option>
+                <option value="gpt-4o-mini">GPT-4o-mini (économique)</option>
+              </optgroup>
+              <optgroup label="Google (Gemini)">
+                <option value="gemini-2.0-flash">Gemini 2.0 Flash ⚡ (gratuit/quota)</option>
+                <option value="gemini-1.5-pro">Gemini 1.5 Pro (vision)</option>
+                <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
+                <option value="gemini-2.0-flash-lite">Gemini 2.0 Flash Lite (ultra-économique)</option>
+              </optgroup>
+              <optgroup label="Mistral">
+                <option value="mistral-large-latest">Mistral Large (bilingue)</option>
+                <option value="mistral-small-latest">Mistral Small (léger)</option>
+              </optgroup>
+              <optgroup label="OpenRouter (Meta LLaMA)">
+                <option value="llama-3-70b-instruct-openrouter">LLaMA 3 70B (gratuit via OpenRouter)</option>
+              </optgroup>
+            </select>
+          </Field>
+
+          <Field label="Clé API Anthropic (Claude)">
+            <input
+              id="anthropic_key"
+              type="password"
+              value={settings.anthropic_key || ""}
+              onChange={(e) => setSettings({ ...settings, anthropic_key: e.target.value })}
+              placeholder="sk-ant-..."
+              className={INPUT_CLS}
+            />
+          </Field>
+
+          <Field label="Clé API Google Gemini (SEO/Vision)">
+            <input
+              id="gemini_key"
+              type="password"
+              value={settings.gemini_key || ""}
+              onChange={(e) => setSettings({ ...settings, gemini_key: e.target.value })}
+              placeholder="AIzaSy..."
+              className={INPUT_CLS}
+            />
+          </Field>
+
+          <Field label="Clé API Mistral">
+            <input
+              id="mistral_key"
+              type="password"
+              value={settings.mistral_key || ""}
+              onChange={(e) => setSettings({ ...settings, mistral_key: e.target.value })}
+              placeholder="MISTRAL_API_KEY"
+              className={INPUT_CLS}
+            />
+          </Field>
+        </Section>
+
+        <hr className="border-slate-800" />
+
+        {/* ── Etsy Integration ──────────────────────────────────────────── */}
+        <Section
+          icon={<Store className="text-amber-400 h-6 w-6" />}
+          title="Intégration Etsy (Publication automatique)"
+        >
+          <Field label="Etsy API Keystring (Client ID)">
+            <input
+              id="etsy_client_id"
+              type="text"
+              value={settings.etsy_client_id || ""}
+              onChange={(e) => setSettings({ ...settings, etsy_client_id: e.target.value })}
+              placeholder="okz43zxofym53cz5acokxqrk"
+              className={INPUT_CLS}
+            />
+          </Field>
+
+          <Field label="Etsy API Shared Secret (Client Secret)">
+            <input
+              id="etsy_client_secret"
+              type="password"
+              value={settings.etsy_client_secret || ""}
+              onChange={(e) => setSettings({ ...settings, etsy_client_secret: e.target.value })}
+              placeholder="tozeexfwvt"
+              className={INPUT_CLS}
+            />
+          </Field>
+
+          <Field label="Connexion OAuth Etsy">
+            <div className="flex flex-col gap-3">
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    const res = await fetch(apiUrl("/api/etsy/login"));
+                    if (!res.ok) {
+                      const err = await res.json();
+                      alert("Erreur : " + (err.detail || "Impossible de générer le lien OAuth."));
+                      return;
+                    }
+                    const data = await res.json();
+                    if (data.url) {
+                      window.location.href = data.url;
+                    }
+                  } catch (err) {
+                    alert("Erreur réseau : " + (err as Error).message);
+                  }
+                }}
+                className="px-5 py-3 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-xl transition text-sm flex items-center justify-center gap-2"
+              >
+                <Store className="h-4 w-4" />
+                Se connecter à Etsy (OAuth)
+              </button>
+              <p className="text-[10px] text-slate-500 leading-relaxed">
+                Cliquez sur ce bouton pour être redirigé vers Etsy et autoriser l'application.
+                Assurez-vous d'avoir enregistré le Keystring et Shared Secret ci-dessus avant de cliquer.
+              </p>
+            </div>
+          </Field>
+
+          <Field label="Statut de connexion">
+            <div className="flex items-center gap-2 text-sm">
+              {settings.etsy_oauth_token && !settings.etsy_oauth_token.startsWith("temp:") ? (
+                <span className="flex items-center gap-1.5 text-emerald-400 font-bold">
+                  <span className="h-2.5 w-2.5 rounded-full bg-emerald-500 inline-block"></span>
+                  Connecté à Etsy
+                </span>
+              ) : (
+                <span className="flex items-center gap-1.5 text-slate-400">
+                  <span className="h-2.5 w-2.5 rounded-full bg-slate-600 inline-block"></span>
+                  Non connecté
+                </span>
+              )}
+              {settings.etsy_oauth_token && !settings.etsy_oauth_token.startsWith("temp:") && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (confirm("Voulez-vous vraiment déconnecter Etsy ?")) {
+                      setSettings({ ...settings, etsy_oauth_token: "" });
+                    }
+                  }}
+                  className="text-[10px] text-rose-400 hover:text-rose-300 underline ml-2"
+                >
+                  Déconnecter
+                </button>
+              )}
+            </div>
+          </Field>
+
+          <Field label="Paramètres par défaut de publication">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] text-slate-500">Prix par défaut (€)</label>
+                <input
+                  type="number"
+                  min="0.50"
+                  max="999"
+                  step="0.50"
+                  value={settings.default_price ?? 3.0}
+                  onChange={(e) => setSettings({ ...settings, default_price: parseFloat(e.target.value) || 3.0 })}
+                  className={INPUT_CLS}
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] text-slate-500">Stock par défaut</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="999"
+                  value={settings.default_quantity ?? 999}
+                  onChange={(e) => setSettings({ ...settings, default_quantity: parseInt(e.target.value) || 999 })}
+                  className={INPUT_CLS}
+                />
+              </div>
+            </div>
+          </Field>
+
+          <Field label="Statut de publication par défaut">
+            <select
+              value={settings.default_status || "draft"}
+              onChange={(e) => setSettings({ ...settings, default_status: e.target.value })}
+              className={INPUT_CLS}
+            >
+              <option value="draft">Brouillon (draft) — Recommandé</option>
+              <option value="active">Actif (active) — Publié immédiatement</option>
+            </select>
+          </Field>
+        </Section>
+
+        <hr className="border-slate-800" />
+
+        {/* ── CLI / System paths ───────────────────────────────────────── */}
+        <Section
+          icon={<Wrench className="text-blue-400 h-6 w-6" />}
+          title="Système & Chemins CLI"
+        >
+          <Field label="Chemin Potrace">
+            <input
+              id="potrace_path"
+              type="text"
+              value={settings.potrace_path || ""}
+              onChange={(e) => setSettings({ ...settings, potrace_path: e.target.value })}
+              className={INPUT_CLS}
+            />
+          </Field>
+          <Field label="Chemin Inkscape">
+            <input
+              id="inkscape_path"
+              type="text"
+              value={settings.inkscape_path || ""}
+              onChange={(e) => setSettings({ ...settings, inkscape_path: e.target.value })}
+              className={INPUT_CLS}
+            />
+          </Field>
+        </Section>
+
+        <button
+          id="save-settings-btn"
+          onClick={saveSettings}
+          disabled={saving}
+          className="w-full mt-6 flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white py-4 rounded-xl font-bold transition shadow-md"
+        >
+          <Save className="h-6 w-6" />
+          {saving ? "Sauvegarde en cours..." : "Sauvegarder la configuration"}
+        </button>
+      </div>
+    </div>
   );
 }

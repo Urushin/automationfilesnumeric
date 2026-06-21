@@ -4,6 +4,7 @@ Generates laser-ready black & white stencil images using a hardcoded,
 production-grade prompt that prevents structural compilation errors.
 """
 import requests
+import base64
 from openai import OpenAI
 from fastapi import HTTPException
 
@@ -28,7 +29,7 @@ DALLE_PROMPT_TEMPLATE = (
 # ─────────────────────────────────────────────────────────────────────────────
 # SERVICE FUNCTIONS
 # ─────────────────────────────────────────────────────────────────────────────
-def generate_stencil_image(openai_api_key: str, theme: str, output_path: str) -> str:
+def legacy_generate_stencil_image(openai_api_key: str, theme: str, output_path: str) -> str:
     """
     Calls DALL-E 3 with the hardcoded laser-optimized prompt.
     Downloads the result and saves it to output_path.
@@ -44,33 +45,36 @@ def generate_stencil_image(openai_api_key: str, theme: str, output_path: str) ->
     if not openai_api_key:
         raise ValueError("OpenAI API key is missing. Configure it in Settings.")
 
-    client = OpenAI(api_key=openai_api_key)
+    client = OpenAI(
+        api_key=openai_api_key,
+        base_url="https://api.openai.com/v1"
+    )
 
     optimized_prompt = DALLE_PROMPT_TEMPLATE.format(theme=theme)
 
     try:
         response = client.images.generate(
-            model="dall-e-3",
+            model="gpt-image-1",
             prompt=optimized_prompt,
             n=1,
             size="1024x1024",
             quality="hd",
-            response_format="url",
         )
-        image_url = response.data[0].url
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"DALL-E 3 API Error: {str(e)}")
-
-    # Download and persist the image
-    try:
-        img_response = requests.get(image_url, timeout=60)
-        img_response.raise_for_status()
+        img_item = response.data[0]
+        if img_item.b64_json:
+            img_data = base64.b64decode(img_item.b64_json)
+            image_url = ""
+        elif img_item.url:
+            image_url = img_item.url
+            img_response = requests.get(image_url, timeout=60)
+            img_response.raise_for_status()
+            img_data = img_response.content
+        else:
+            raise ValueError("No image URL or b64_json found in response data")
+            
         with open(output_path, "wb") as f:
-            f.write(img_response.content)
+            f.write(img_data)
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to download DALL-E 3 image: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"gpt-image-1 API Error: {str(e)}")
 
     return image_url

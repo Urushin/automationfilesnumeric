@@ -4,10 +4,56 @@ import time
 import requests
 import base64
 import hashlib
+import re
 from typing import Optional, Dict, Any
 
 ETSY_API_URL = "https://api.etsy.com/v3/application"
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+
+def clean_text_for_title(text: str) -> str:
+    if not text:
+        return ""
+    # Replace & with and
+    text = text.replace("&", "and")
+    # Remove < > " and control characters
+    text = re.sub(r'[<>"\\\x00-\x1f]', "", text)
+    # Strip multiple spaces
+    text = re.sub(r'\s+', " ", text)
+    return text.strip()
+
+def clean_tag(tag: str) -> str:
+    if not tag:
+        return ""
+    # Remove illegal tag chars: , ; : ! @ # $ % ^ * ( ) + = { } [ ] | \ < > / and control chars
+    tag = re.sub(r'[,;:!@#$%\^\*\(\)\+=\{\}\[\]\|\\<>\/\x00-\x1f]', "", tag)
+    # Strip multiple spaces
+    tag = re.sub(r'\s+', " ", tag)
+    # Truncate to 20 chars max
+    return tag.strip()[:20]
+
+def auto_clean_metadata_for_etsy(creation):
+    """
+    Cleans and conforms creation titles, tags, and descriptions to strictly respect
+    Etsy API limits and illegal character restrictions.
+    """
+    # Clean titles
+    if creation.title_en:
+        creation.title_en = clean_text_for_title(creation.title_en)[:140]
+    if creation.title_fr:
+        creation.title_fr = clean_text_for_title(creation.title_fr)[:140]
+        
+    # Clean tags EN
+    if creation.tags_en:
+        tags = [clean_tag(t) for t in creation.tags_en.split(",") if t.strip()]
+        # Remove empty tags and keep first 13
+        tags = [t for t in tags if t][:13]
+        creation.tags_en = ",".join(tags)
+        
+    # Clean tags FR
+    if creation.tags_fr:
+        tags = [clean_tag(t) for t in creation.tags_fr.split(",") if t.strip()]
+        tags = [t for t in tags if t][:13]
+        creation.tags_fr = ",".join(tags)
 
 def generate_pkce_pair() -> tuple:
     """Generates code verifier and code challenge for PKCE OAuth."""
@@ -106,13 +152,15 @@ def get_etsy_shop_id(access_token: str, client_id: str) -> str:
     return str(shops_data.get("shop_id"))
 
 def storage_url_to_path(storage_url: Optional[str]) -> Optional[str]:
-    """Convert a /static/... URL stored in SQLite to a backend filesystem path."""
+    """Convert a /static/... or /assets/... URL stored in SQLite to a backend filesystem path."""
     if not storage_url:
         return None
     if os.path.isabs(storage_url):
         return storage_url
     if storage_url.startswith("/static/"):
         return os.path.join(BACKEND_DIR, "storage", storage_url.removeprefix("/static/"))
+    if storage_url.startswith("/assets/"):
+        return os.path.join(BACKEND_DIR, "assets", storage_url.removeprefix("/assets/"))
     return storage_url
 
 
@@ -147,6 +195,10 @@ def publish_listing_to_etsy(settings, creation, db) -> Dict[str, Any]:
     If Etsy integration parameters are missing or set to a mock token,
     runs in Simulation Mode for local demo / sandbox validation.
     """
+    # Auto-clean metadata to conform to Etsy guidelines
+    auto_clean_metadata_for_etsy(creation)
+    db.commit()
+
     # Guardrail Check - Simulation Mode trigger
     is_simulation = False
     if (not settings.etsy_client_id or 
@@ -217,20 +269,47 @@ def publish_listing_to_etsy(settings, creation, db) -> Dict[str, Any]:
         
     listing_id = create_resp.json().get("listing_id")
     
-    # 2. Upload Mockup Image as main photo
-    mockup_file_path = storage_url_to_path(creation.mockup_path)
-    if mockup_file_path and os.path.exists(mockup_file_path):
+    # 2. Upload Selected Images sequentially
+    images_to_upload = []
+    if creation.selected_images_raw:
+        images_to_upload = [p.strip() for p in creation.selected_images_raw.split(",") if p.strip()]
+    else:
+        # Default fallback list in sensible order
+        if creation.mockup_path:
+            images_to_upload.append(creation.mockup_path)
+        if creation.real_mockup_path:
+            images_to_upload.append(creation.real_mockup_path)
+        if creation.png_paths:
+            for p in creation.png_paths:
+                if p not in images_to_upload:
+                    images_to_upload.append(p)
+                    
+    # Filter out empty paths and map to local filesystem
+    valid_image_paths = []
+    for img_url in images_to_upload:
+        local_path = storage_url_to_path(img_url)
+        if local_path and os.path.exists(local_path) and local_path not in valid_image_paths:
+            valid_image_paths.append(local_path)
+            
+    if valid_image_paths:
         img_upload_url = f"{ETSY_API_URL}/shops/{shop_id}/listings/{listing_id}/images"
         multipart_headers = {
             "x-api-key": client_id,
             "Authorization": f"Bearer {access_token}"
         }
-        with open(mockup_file_path, "rb") as img_file:
-            files = {"image": (os.path.basename(mockup_file_path), img_file, "image/jpeg")}
-            data = {"rank": 1}
-            img_resp = requests.post(img_upload_url, headers=multipart_headers, files=files, data=data, timeout=60)
-            if img_resp.status_code not in (200, 201):
-                print(f"Warning: Mockup image upload failed: {img_resp.text}")
+        for rank_idx, img_file_path in enumerate(valid_image_paths):
+            try:
+                mime_type = "image/png" if img_file_path.lower().endswith(".png") else "image/jpeg"
+                with open(img_file_path, "rb") as img_file:
+                    files = {"image": (os.path.basename(img_file_path), img_file, mime_type)}
+                    data = {"rank": rank_idx + 1}
+                    img_resp = requests.post(img_upload_url, headers=multipart_headers, files=files, data=data, timeout=60)
+                    if img_resp.status_code not in (200, 201):
+                        print(f"Warning: Image upload failed for {img_file_path}: {img_resp.text}")
+                    else:
+                        print(f"Successfully uploaded listing image {img_file_path} at rank {rank_idx + 1}")
+            except Exception as ie:
+                print(f"Exception during image upload for {img_file_path}: {ie}")
                 
     # 3. Upload ZIP file containing files
     zip_file_path = storage_url_to_path(creation.zip_path)

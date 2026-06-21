@@ -1395,18 +1395,69 @@ def translate_and_optimize_seo(
             "}"
         )
 
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a professional e-commerce translator specializing in Etsy SEO."},
-                {"role": "user", "content": prompt}
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.3,
-            timeout=30
-        )
+        res_content = None
+
+        try:
+            print("[translate-seo] Attempting translation via OpenAI...")
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are a professional e-commerce translator specializing in Etsy SEO."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.3,
+                timeout=30
+            )
+            res_content = response.choices[0].message.content
+        except Exception as openai_err:
+            print(f"[translate-seo] OpenAI failed: {openai_err}. Trying Gemini fallback...")
+            gemini_key = settings.gemini_key or os.getenv("GEMINI_API_KEY")
+            if gemini_key and gemini_key.strip():
+                try:
+                    from google import genai
+                    from google.genai import types
+                    client_gemini = genai.Client(api_key=gemini_key.strip())
+                    response_gemini = client_gemini.models.generate_content(
+                        model='gemini-2.5-flash',
+                        contents=f"Return strictly a JSON object conforming to this schema:\n\n{prompt}",
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                            temperature=0.3
+                        )
+                    )
+                    if response_gemini.text:
+                        res_content = response_gemini.text
+                        print("[translate-seo] Success: Fallback translation captured via Gemini.")
+                except Exception as gemini_err:
+                    print(f"[translate-seo] Gemini fallback failed: {gemini_err}")
+            
+            if not res_content:
+                mistral_key = settings.mistral_key or os.getenv("MISTRAL_API_KEY")
+                if mistral_key and mistral_key.strip():
+                    try:
+                        print("[translate-seo] Trying Mistral fallback...")
+                        from mistralai import Mistral
+                        client_mistral = Mistral(api_key=mistral_key.strip())
+                        response_mistral = client_mistral.chat.complete(
+                            model="mistral-small-latest",
+                            messages=[
+                                {"role": "system", "content": "You are a professional e-commerce translator specializing in Etsy SEO. Return strictly a JSON object."},
+                                {"role": "user", "content": prompt}
+                            ],
+                            response_format={"type": "json_object"}
+                        )
+                        res_content = response_mistral.choices[0].message.content
+                        print("[translate-seo] Success: Fallback translation captured via Mistral.")
+                    except Exception as mistral_err:
+                        print(f"[translate-seo] Mistral fallback failed: {mistral_err}")
+                        
+            if not res_content:
+                raise RuntimeError(f"All translation providers failed. OpenAI -> {openai_err}")
+
         import json
-        res_data = json.loads(response.choices[0].message.content)
+        res_data = json.loads(res_content)
+
         
         title_en = res_data.get("title_en", "")[:140]
         desc_en = res_data.get("description_en", "")

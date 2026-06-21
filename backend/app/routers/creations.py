@@ -31,9 +31,14 @@ class SelectVariantRequest(BaseModel):
     variant_path: str
 
 class TranslateSEOResponse(BaseModel):
-    title_en: str
-    description_en: str
-    tags_en: List[str]
+    status: str = "success"
+    data: Optional[dict] = None
+    title_en: str = ""
+    description_en: str = ""
+    tags_en: List[str] = []
+    title_fr: str = ""
+    description_fr: str = ""
+    tags_fr: List[str] = []
 
 router = APIRouter(prefix="/api/creations", tags=["creations"])
 
@@ -1360,7 +1365,9 @@ def translate_and_optimize_seo(
     db: Session = Depends(get_db)
 ):
     """
-    Translates and optimizes Etsy metadata context using Mistral AI.
+    Translates and optimizes bilingual Etsy metadata (FR + EN) using Mistral AI.
+    Expects the model to return: { fr: { title, description, tags }, en: { title, description, tags } }
+    Returns both language blocks so the frontend can update both simultaneously.
     """
     settings = get_or_create_settings(db)
     mistral_key = settings.mistral_key or os.getenv("MISTRAL_API_KEY")
@@ -1379,11 +1386,11 @@ def translate_and_optimize_seo(
         import json
         res_data = json.loads(res_content)
         
-        title_en = res_data.get("title", "")[:140]
-        desc_en = res_data.get("description", "")
-        raw_tags = res_data.get("tags", [])
+        # Extract bilingual blocks
+        fr_block = res_data.get("fr", {})
+        en_block = res_data.get("en", {})
         
-        # Post-process tags to ensure strictly under 20 chars, lowercase, ascii only, discard >= 20 chars
+        # Helper for tag cleaning
         import unicodedata
         def _clean_tag(t):
             val = unicodedata.normalize("NFKD", str(t))
@@ -1393,31 +1400,61 @@ def translate_and_optimize_seo(
             if len(val) >= 20:
                 return ""
             return val
-
-        clean_tags = []
-        seen = set()
-        for t in raw_tags:
-            ct = _clean_tag(t)
-            if ct and ct not in seen:
-                clean_tags.append(ct)
-                seen.add(ct)
-                
-        fallback_tags = ["svg file", "laser cut file", "dxf file", "laser stencil", "eps file", "ai file", "cricut svg", "silhouette svg", "glowforge svg", "xtool laser", "wood laser", "laser engrave"]
-        for ft in fallback_tags:
-            if len(clean_tags) >= 13:
-                break
-            cft = _clean_tag(ft)
-            if cft and cft not in seen:
-                clean_tags.append(cft)
-                seen.add(cft)
-                
+        
+        def _process_tags(raw_tags, fallback_pool):
+            clean_tags = []
+            seen = set()
+            for t in (raw_tags or []):
+                ct = _clean_tag(t)
+                if ct and ct not in seen:
+                    clean_tags.append(ct)
+                    seen.add(ct)
+            for ft in fallback_pool:
+                if len(clean_tags) >= 13:
+                    break
+                cft = _clean_tag(ft)
+                if cft and cft not in seen:
+                    clean_tags.append(cft)
+                    seen.add(cft)
+            return clean_tags[:13]
+        
+        fallback_en = ["svg file", "laser cut file", "dxf file", "laser stencil", "eps file", "ai file", "cricut svg", "silhouette svg", "glowforge svg", "xtool laser", "wood laser", "laser engrave"]
+        fallback_fr = ["fichier svg", "decoupe laser", "fichier dxf", "stencil laser", "fichier eps", "fichier ai", "cricut svg", "silhouette svg", "glowforge svg", "xtool laser", "bois laser", "gravure laser"]
+        
+        title_en = (en_block.get("title") or res_data.get("title") or "")[:140]
+        desc_en = en_block.get("description") or res_data.get("description") or ""
+        tags_en = _process_tags(en_block.get("tags") or res_data.get("tags", []), fallback_en)
+        
+        title_fr = (fr_block.get("title") or "")[:140]
+        desc_fr = fr_block.get("description") or ""
+        tags_fr = _process_tags(fr_block.get("tags", []), fallback_fr)
+        
+        # Build the bilingual data object for frontend consumption
+        bilingual_data = {
+            "fr": {
+                "title": title_fr,
+                "description": desc_fr,
+                "tags": tags_fr
+            },
+            "en": {
+                "title": title_en,
+                "description": desc_en,
+                "tags": tags_en
+            }
+        }
+        
         return TranslateSEOResponse(
+            status="success",
+            data=bilingual_data,
+            title_fr=title_fr,
+            description_fr=desc_fr,
+            tags_fr=tags_fr,
             title_en=title_en,
             description_en=desc_en,
-            tags_en=clean_tags[:13]
+            tags_en=tags_en
         )
     except Exception as e:
-        print(f"[translate-seo] Mistral translation failed: {e}")
+        print(f"[translate-seo] Mistral bilingual translation failed: {e}")
         raise HTTPException(status_code=500, detail=f"Translation failed: {str(e)}")
 
 

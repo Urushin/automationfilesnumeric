@@ -22,9 +22,10 @@ import re
 import unicodedata
 
 class TranslateSEORequest(BaseModel):
-    title_fr: str
-    description_fr: str
-    tags_fr: List[str]
+    text: str
+    creation_id: str
+    instructions: Optional[str] = None
+    target_fields: List[str] = ["title", "description", "tags"] # e.g. ["title", "tags"]
 
 class SelectVariantRequest(BaseModel):
     variant_path: str
@@ -1359,108 +1360,28 @@ def translate_and_optimize_seo(
     db: Session = Depends(get_db)
 ):
     """
-    Translates French Etsy title, description, and tags into high-converting e-commerce English using gpt-4o-mini.
+    Translates and optimizes Etsy metadata context using Mistral AI.
     """
     settings = get_or_create_settings(db)
-    openai_key = settings.openai_key or os.getenv("OPENAI_API_KEY")
-    if not openai_key or not openai_key.strip():
-        # Fallback if key is missing
-        title_en = req.title_fr.replace("pour Découpe Laser", "for Laser Cutting").replace("Fichier Cricut", "Cricut Files")
-        desc_en = req.description_fr.replace("Ce pack comprend", "This pack includes").replace("découpe laser", "laser cutting")
-        tags_en = [t.replace("decoupe", "cut").replace("fichier", "file")[:19] for t in req.tags_fr]
-        return TranslateSEOResponse(title_en=title_en[:140], description_en=desc_en, tags_en=tags_en[:13])
-
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=openai_key.strip(), base_url="https://api.openai.com/v1")
+    mistral_key = settings.mistral_key or os.getenv("MISTRAL_API_KEY")
+    if mistral_key:
+        os.environ["MISTRAL_API_KEY"] = mistral_key.strip()
         
-        prompt = (
-            "You are an expert Etsy SEO copywriter. Translate the following French product details into high-converting, "
-            "search-optimized Etsy English titles, descriptions, and tags. \n\n"
-            "Input Title (French):\n"
-            f"{req.title_fr}\n\n"
-            "Input Description (French):\n"
-            f"{req.description_fr}\n\n"
-            "Input Tags (French):\n"
-            f"{', '.join(req.tags_fr)}\n\n"
-            "STRICT RULES:\n"
-            "1. Output English Title: Max 140 characters, front-loaded with the most relevant search terms (e.g. '[Subject] SVG Bundle for Laser Cutting'). No trademarks.\n"
-            "2. Output English Description: Follow the exact same section structure, emoji layout, and keep the two license URLs (https://digitalfilesbymop.etsy.com/listing/4499076966 and https://digitalfilesbymop.etsy.com/listing/4499075567) exactly unchanged.\n"
-            "3. Output English Tags: Return exactly 13 tags. Every single tag MUST be a multi-word long-tail keyword (e.g., 'metal wall art'), but strictly UNDER 20 characters in total length. Discard any tag exceeding 20 characters.\n\n"
-            "Return the result strictly as a valid JSON object matching the following structure:\n"
-            "{\n"
-            "  \"title_en\": \"...\",\n"
-            "  \"description_en\": \"...\",\n"
-            "  \"tags_en\": [\"tag1\", \"tag2\", ...]\n"
-            "}"
+    from ..services.text_engine import translate_and_optimize_prompt
+    
+    try:
+        res_content = translate_and_optimize_prompt(
+            user_text=req.text,
+            target_fields=req.target_fields,
+            instructions=req.instructions
         )
-
-        res_content = None
-
-        try:
-            print("[translate-seo] Attempting translation via OpenAI...")
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": "You are a professional e-commerce translator specializing in Etsy SEO."},
-                    {"role": "user", "content": prompt}
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.3,
-                timeout=30
-            )
-            res_content = response.choices[0].message.content
-        except Exception as openai_err:
-            print(f"[translate-seo] OpenAI failed: {openai_err}. Trying Gemini fallback...")
-            gemini_key = settings.gemini_key or os.getenv("GEMINI_API_KEY")
-            if gemini_key and gemini_key.strip():
-                try:
-                    from google import genai
-                    from google.genai import types
-                    client_gemini = genai.Client(api_key=gemini_key.strip())
-                    response_gemini = client_gemini.models.generate_content(
-                        model='gemini-2.5-flash',
-                        contents=f"Return strictly a JSON object conforming to this schema:\n\n{prompt}",
-                        config=types.GenerateContentConfig(
-                            response_mime_type="application/json",
-                            temperature=0.3
-                        )
-                    )
-                    if response_gemini.text:
-                        res_content = response_gemini.text
-                        print("[translate-seo] Success: Fallback translation captured via Gemini.")
-                except Exception as gemini_err:
-                    print(f"[translate-seo] Gemini fallback failed: {gemini_err}")
-            
-            if not res_content:
-                mistral_key = settings.mistral_key or os.getenv("MISTRAL_API_KEY")
-                if mistral_key and mistral_key.strip():
-                    try:
-                        print("[translate-seo] Trying Mistral fallback...")
-                        from mistralai import Mistral
-                        client_mistral = Mistral(api_key=mistral_key.strip())
-                        response_mistral = client_mistral.chat.complete(
-                            model="mistral-small-latest",
-                            messages=[
-                                {"role": "system", "content": "You are a professional e-commerce translator specializing in Etsy SEO. Return strictly a JSON object."},
-                                {"role": "user", "content": prompt}
-                            ],
-                            response_format={"type": "json_object"}
-                        )
-                        res_content = response_mistral.choices[0].message.content
-                        print("[translate-seo] Success: Fallback translation captured via Mistral.")
-                    except Exception as mistral_err:
-                        print(f"[translate-seo] Mistral fallback failed: {mistral_err}")
-                        
-            if not res_content:
-                raise RuntimeError(f"All translation providers failed. OpenAI -> {openai_err}")
-
+        
         import json
         res_data = json.loads(res_content)
-
         
-        title_en = res_data.get("title_en", "")[:140]
-        desc_en = res_data.get("description_en", "")
+        title_en = res_data.get("title", "")[:140]
+        desc_en = res_data.get("description", "")
+        raw_tags = res_data.get("tags", [])
         
         # Post-process tags to ensure strictly under 20 chars, lowercase, ascii only, discard >= 20 chars
         import unicodedata
@@ -1473,7 +1394,6 @@ def translate_and_optimize_seo(
                 return ""
             return val
 
-        raw_tags = res_data.get("tags_en", [])
         clean_tags = []
         seen = set()
         for t in raw_tags:
@@ -1482,7 +1402,6 @@ def translate_and_optimize_seo(
                 clean_tags.append(ct)
                 seen.add(ct)
                 
-        # If we have less than 13 tags, fill with generic under-20 fallback tags
         fallback_tags = ["svg file", "laser cut file", "dxf file", "laser stencil", "eps file", "ai file", "cricut svg", "silhouette svg", "glowforge svg", "xtool laser", "wood laser", "laser engrave"]
         for ft in fallback_tags:
             if len(clean_tags) >= 13:
@@ -1491,14 +1410,14 @@ def translate_and_optimize_seo(
             if cft and cft not in seen:
                 clean_tags.append(cft)
                 seen.add(cft)
-
+                
         return TranslateSEOResponse(
             title_en=title_en,
             description_en=desc_en,
             tags_en=clean_tags[:13]
         )
     except Exception as e:
-        print(f"[translate-seo] GPT translation failed: {e}")
+        print(f"[translate-seo] Mistral translation failed: {e}")
         raise HTTPException(status_code=500, detail=f"Translation failed: {str(e)}")
 
 

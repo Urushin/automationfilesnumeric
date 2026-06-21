@@ -155,6 +155,20 @@ export default function ReviewPage() {
   const [accordionOpen, setAccordionOpen] = useState(false);
   const [shouldVectorize, setShouldVectorize] = useState(false);
   const [nImages, setNImages] = useState(1);
+  const [seoInstructions, setSeoInstructions] = useState("");
+  const [targetFields, setTargetFields] = useState<string[]>(["title", "description", "tags"]);
+  const [defaultSuggestedTags] = useState<string[]>([
+    "Digital Wall Art", "Laser Cut File", "Vector Stencil", "Silhouette PNG", 
+    "Etsy Best Seller", "CNC Router Template", "Scroll Saw Pattern", "DIY Craft Design"
+  ]);
+
+  const handleToggleField = (field: string) => {
+    if (targetFields.includes(field)) {
+      setTargetFields(targetFields.filter(f => f !== field));
+    } else {
+      setTargetFields([...targetFields, field]);
+    }
+  };
 
   const [publishing, setPublishing] = useState(false);
   const [previewTab, setPreviewTab] = useState<"mockup" | "real_mockup" | "svg" | "png">("mockup");
@@ -725,9 +739,14 @@ export default function ReviewPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          title_fr: titleFr,
-          description_fr: description,
-          tags_fr: getCleanTags(tagsFrInput),
+          text: JSON.stringify({
+            title_fr: titleFr,
+            description_fr: description,
+            tags_fr: getCleanTags(tagsFrInput),
+          }),
+          creation_id: creationId,
+          instructions: seoInstructions,
+          target_fields: targetFields,
         }),
       });
       if (!res.ok) {
@@ -735,9 +754,33 @@ export default function ReviewPage() {
         throw new Error(errData.detail || "Échec de la traduction.");
       }
       const data = await res.json();
-      setTitleEn(data.title_en || "");
-      setDescriptionEn(data.description_en || "");
-      setTagsEnInput(data.tags_en ? data.tags_en.join(", ") : "");
+      console.log("[SEO Sync] Backend translation response raw packet:", data);
+      
+      const target = (data && data.status === "success" && data.data) ? data.data : data;
+      
+      if (targetFields.includes("title")) {
+        const newTitle = target.title_en || target.title || target.translated_title || (typeof target === "string" ? target : "");
+        setTitleEn(newTitle || "");
+      }
+      if (targetFields.includes("description")) {
+        const newDesc = target.description_en || target.description || target.translated_description || "";
+        setDescriptionEn(newDesc || "");
+      }
+      if (targetFields.includes("tags")) {
+        let newTags = "";
+        if (Array.isArray(target.tags_en)) {
+          newTags = target.tags_en.join(", ");
+        } else if (Array.isArray(target.tags)) {
+          newTags = target.tags.join(", ");
+        } else if (typeof target.tags === "string") {
+          newTags = target.tags;
+        } else if (typeof target.tags_en === "string") {
+          newTags = target.tags_en;
+        }
+        setTagsEnInput(newTags || "");
+      }
+
+      setSeoInstructions(""); // Reset instruction canvas upon success
       setNotification({ type: "success", message: "Traduction et optimisation en anglais réussies !" });
     } catch (err: any) {
       setNotification({ type: "error", message: err.message });
@@ -1721,25 +1764,108 @@ export default function ReviewPage() {
         <div className="lg:col-span-7 space-y-6">
           <div className="glass-panel rounded-2xl p-6 space-y-6">
             <h2 className="text-lg font-bold border-b border-slate-900 pb-3">Optimisation SEO & Fiche Produit</h2>
-            <div className="flex justify-end gap-2">
+            <div className="bg-slate-900/60 p-4 rounded-xl border border-slate-800 shadow-sm space-y-4 my-6">
+              <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                <h4 className="text-sm font-semibold text-slate-200">Régénération SEO Ciblé & Intelligent</h4>
+                <button
+                  type="button"
+                  onClick={handleRegenerateSeo}
+                  disabled={regeneratingSeo || translatingSeo}
+                  className="inline-flex items-center space-x-1.5 rounded-lg bg-slate-800 px-3 py-1.5 text-[10px] font-bold text-slate-300 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50 border border-slate-700"
+                >
+                  <RefreshCw className={`h-3 w-3 ${regeneratingSeo ? "animate-spin" : ""}`} />
+                  <span>{regeneratingSeo ? "Régénération..." : "Régénérer SEO global (FR/EN)"}</span>
+                </button>
+              </div>
+              
+              <div className="flex flex-wrap gap-4 items-center bg-slate-950/60 p-2.5 rounded-lg text-xs">
+                <span className="font-medium text-slate-400">Champs à modifier :</span>
+                {["title", "description", "tags"].map((field) => (
+                  <label key={field} className="flex items-center gap-1.5 capitalize cursor-pointer text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={targetFields.includes(field)}
+                      onChange={() => handleToggleField(field)}
+                      className="h-3.5 w-3.5 rounded border-slate-700 bg-slate-800 text-indigo-600 focus:ring-offset-slate-900"
+                    />
+                    {field === "title" ? "Titre" : field}
+                  </label>
+                ))}
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-medium text-slate-400 text-left">Détails/Modifications spécifiques à apporter :</label>
+                <textarea
+                  value={seoInstructions}
+                  onChange={(e) => setSeoInstructions(e.target.value)}
+                  placeholder="Ex: Rends le titre plus accrocheur pour Noël, ou ajoute des détails sur les dimensions dans la description..."
+                  className="w-full p-2 border border-slate-800 bg-slate-950 text-slate-300 rounded-md text-xs h-16 resize-none focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                />
+              </div>
+
               <button
                 type="button"
                 onClick={handleTranslateSeo}
-                disabled={translatingSeo || regeneratingSeo}
-                className="inline-flex items-center space-x-2 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={translatingSeo || targetFields.length === 0}
+                className="w-full bg-indigo-600 text-white text-xs font-semibold p-2.5 rounded-md hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-500 transition-colors flex items-center justify-center gap-2"
               >
-                <Languages className={`h-3.5 w-3.5 ${translatingSeo ? "animate-spin" : ""}`} />
-                <span>{translatingSeo ? "Traduction..." : "Traduire & Optimiser en Anglais"}</span>
+                {translatingSeo ? (
+                  <>
+                    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                    <span>Optimisation en cours...</span>
+                  </>
+                ) : (
+                  <span>Lancer la régénération ciblée</span>
+                )}
               </button>
-              <button
-                type="button"
-                onClick={handleRegenerateSeo}
-                disabled={regeneratingSeo || translatingSeo}
-                className="inline-flex items-center space-x-2 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <RefreshCw className={`h-3.5 w-3.5 ${regeneratingSeo ? "animate-spin" : ""}`} />
-                <span>{regeneratingSeo ? "Régénération..." : "Régénérer SEO bilingue"}</span>
-              </button>
+
+              <div className="border-t border-slate-800/80 pt-3 grid grid-cols-1 md:grid-cols-2 gap-4 text-left">
+                <div>
+                  <span className="text-xs font-medium text-slate-400 block mb-1.5">Tags Anglais (Actifs) :</span>
+                  <div className="flex flex-wrap gap-1">
+                    {tagsEnArray.map((tag, i) => (
+                      <span key={i} className="inline-flex items-center gap-1 bg-indigo-950/80 text-indigo-300 text-[10px] font-medium px-2 py-0.5 rounded-full border border-indigo-500/20">
+                        {tag}
+                        <button 
+                          type="button"
+                          onClick={() => {
+                            const remaining = tagsEnArray.filter(t => t !== tag);
+                            setTagsEnInput(remaining.join(", "));
+                          }}
+                          className="hover:text-red-400 font-bold"
+                        >×</button>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="bg-slate-950/40 p-2.5 rounded-lg border border-dashed border-slate-800">
+                  <span className="text-xs font-medium text-slate-400 block mb-1.5">Suggestions de Tags par défaut :</span>
+                  <div className="flex flex-wrap gap-1">
+                    {defaultSuggestedTags.map((tag, i) => {
+                      const isAdded = tagsEnArray.includes(tag.toLowerCase());
+                      return (
+                        <button
+                          key={i}
+                          type="button"
+                          disabled={isAdded}
+                          onClick={() => {
+                            const newTags = [...tagsEnArray, tag.toLowerCase()];
+                            setTagsEnInput(newTags.join(", "));
+                          }}
+                          className={`text-[10px] px-2 py-0.5 rounded-full border transition-all ${
+                            isAdded 
+                              ? "bg-slate-800 text-slate-500 border-transparent cursor-not-allowed" 
+                              : "bg-slate-900 text-slate-300 border-slate-800 hover:border-indigo-500 hover:text-indigo-400"
+                          }`}
+                        >
+                          + {tag}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
             </div>
             
             {/* French Title */}

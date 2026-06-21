@@ -162,6 +162,19 @@ export default function ReviewPage() {
     "Etsy Best Seller", "CNC Router Template", "Scroll Saw Pattern", "DIY Craft Design"
   ]);
 
+  const [activeTagLang, setActiveTagLang] = useState<"fr" | "en">("fr");
+
+  const [suggestedTagsMap] = useState<Record<"fr" | "en", string[]>>({
+    fr: [
+      "Art Mural Digital", "Fichier Découpe Laser", "Pochoir Vectoriel", "Silhouette PNG",
+      "Boutique Etsy Étoile", "Modèle CNC Router", "Patron Scie à Chantourner", "Projet DIY Artisanat"
+    ],
+    en: [
+      "Digital Wall Art", "Laser Cut File", "Vector Stencil", "Silhouette PNG", 
+      "Etsy Best Seller", "CNC Router Template", "Scroll Saw Pattern", "DIY Craft Design"
+    ]
+  });
+
   const handleToggleField = (field: string) => {
     if (targetFields.includes(field)) {
       setTargetFields(targetFields.filter(f => f !== field));
@@ -205,6 +218,21 @@ export default function ReviewPage() {
   const [selectingVariant, setSelectingVariant] = useState(false);
   const [activeAssetPath, setActiveAssetPath] = useState<string | null>(null);
   const [activeAssetType, setActiveAssetType] = useState<string | null>(null);
+  const [selectedFilesForEtsy, setSelectedFilesForEtsy] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (creation?.png_paths?.length) {
+      setSelectedFilesForEtsy(creation.png_paths.map(p => p));
+    }
+  }, [creation?.png_paths?.join(",")]);
+
+  const handleToggleFileSelection = (filePath: string) => {
+    setSelectedFilesForEtsy(prev =>
+      prev.includes(filePath)
+        ? prev.filter(p => p !== filePath)
+        : [...prev, filePath]
+    );
+  };
 
   const handleSelectVariant = async (path: string) => {
     try {
@@ -740,9 +768,16 @@ export default function ReviewPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           text: JSON.stringify({
-            title_fr: titleFr,
-            description_fr: description,
-            tags_fr: getCleanTags(tagsFrInput),
+            fr: {
+              title: titleFr,
+              description: description,
+              tags: getCleanTags(tagsFrInput)
+            },
+            en: {
+              title: titleEn,
+              description: descriptionEn,
+              tags: getCleanTags(tagsEnInput)
+            }
           }),
           creation_id: creationId,
           instructions: seoInstructions,
@@ -754,34 +789,65 @@ export default function ReviewPage() {
         throw new Error(errData.detail || "Échec de la traduction.");
       }
       const data = await res.json();
-      console.log("[SEO Sync] Backend translation response raw packet:", data);
+      console.log("[SEO Sync] Backend bilingual translation response:", data);
       
-      const target = (data && data.status === "success" && data.data) ? data.data : data;
+      // Extract bilingual data from response.data.fr and response.data.en
+      const bilingualData = (data && data.status === "success" && data.data) ? data.data : null;
       
-      if (targetFields.includes("title")) {
-        const newTitle = target.title_en || target.title || target.translated_title || (typeof target === "string" ? target : "");
-        setTitleEn(newTitle || "");
-      }
-      if (targetFields.includes("description")) {
-        const newDesc = target.description_en || target.description || target.translated_description || "";
-        setDescriptionEn(newDesc || "");
-      }
-      if (targetFields.includes("tags")) {
-        let newTags = "";
-        if (Array.isArray(target.tags_en)) {
-          newTags = target.tags_en.join(", ");
-        } else if (Array.isArray(target.tags)) {
-          newTags = target.tags.join(", ");
-        } else if (typeof target.tags === "string") {
-          newTags = target.tags;
-        } else if (typeof target.tags_en === "string") {
-          newTags = target.tags_en;
+      if (bilingualData) {
+        // Update FR fields if targeted
+        if (targetFields.includes("title") && bilingualData.fr?.title) {
+          setTitleFr(bilingualData.fr.title);
         }
-        setTagsEnInput(newTags || "");
+        if (targetFields.includes("description") && bilingualData.fr?.description) {
+          setDescription(bilingualData.fr.description);
+        }
+        if (targetFields.includes("tags") && bilingualData.fr?.tags) {
+          if (Array.isArray(bilingualData.fr.tags)) {
+            setTagsFrInput(bilingualData.fr.tags.join(", "));
+          }
+        }
+        
+        // Update EN fields if targeted
+        if (targetFields.includes("title") && bilingualData.en?.title) {
+          setTitleEn(bilingualData.en.title);
+        }
+        if (targetFields.includes("description") && bilingualData.en?.description) {
+          setDescriptionEn(bilingualData.en.description);
+        }
+        if (targetFields.includes("tags") && bilingualData.en?.tags) {
+          if (Array.isArray(bilingualData.en.tags)) {
+            setTagsEnInput(bilingualData.en.tags.join(", "));
+          }
+        }
+      } else {
+        // Fallback to legacy flat response parsing (pre-bilingual support)
+        const target = data;
+        if (targetFields.includes("title")) {
+          const newTitle = target.title_en || target.title || target.translated_title || "";
+          setTitleEn(newTitle || "");
+        }
+        if (targetFields.includes("description")) {
+          const newDesc = target.description_en || target.description || target.translated_description || "";
+          setDescriptionEn(newDesc || "");
+        }
+        if (targetFields.includes("tags")) {
+          let newTags = "";
+          if (Array.isArray(target.tags_en)) {
+            newTags = target.tags_en.join(", ");
+          } else if (Array.isArray(target.tags)) {
+            newTags = target.tags.join(", ");
+          } else if (typeof target.tags === "string") {
+            newTags = target.tags;
+          } else if (typeof target.tags_en === "string") {
+            newTags = target.tags_en;
+          }
+          setTagsEnInput(newTags || "");
+        }
       }
 
       setSeoInstructions(""); // Reset instruction canvas upon success
-      setNotification({ type: "success", message: "Traduction et optimisation en anglais réussies !" });
+      setNotification({ type: "success", message: "Optimisation SEO bilingue (FR/EN) réussie !" });
     } catch (err: any) {
       setNotification({ type: "error", message: err.message });
     } finally {
@@ -1819,51 +1885,101 @@ export default function ReviewPage() {
                 )}
               </button>
 
-              <div className="border-t border-slate-800/80 pt-3 grid grid-cols-1 md:grid-cols-2 gap-4 text-left">
-                <div>
-                  <span className="text-xs font-medium text-slate-400 block mb-1.5">Tags Anglais (Actifs) :</span>
-                  <div className="flex flex-wrap gap-1">
-                    {tagsEnArray.map((tag, i) => (
-                      <span key={i} className="inline-flex items-center gap-1 bg-indigo-950/80 text-indigo-300 text-[10px] font-medium px-2 py-0.5 rounded-full border border-indigo-500/20">
-                        {tag}
-                        <button 
-                          type="button"
-                          onClick={() => {
-                            const remaining = tagsEnArray.filter(t => t !== tag);
-                            setTagsEnInput(remaining.join(", "));
-                          }}
-                          className="hover:text-red-400 font-bold"
-                        >×</button>
-                      </span>
-                    ))}
+              <div className="border-t border-t-slate-800/80 pt-3 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-400">Gestion Modulaire des Tags</span>
+                  
+                  {/* Language Switcher Tabs Control */}
+                  <div className="flex border rounded overflow-hidden text-[11px] font-medium">
+                    <button
+                      type="button"
+                      onClick={() => setActiveTagLang("fr")}
+                      className={`px-3 py-1 transition-colors ${activeTagLang === "fr" ? "bg-indigo-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}
+                    >
+                      Français (FR)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTagLang("en")}
+                      className={`px-3 py-1 transition-colors ${activeTagLang === "en" ? "bg-indigo-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}
+                    >
+                      Anglais (EN)
+                    </button>
                   </div>
                 </div>
 
-                <div className="bg-slate-950/40 p-2.5 rounded-lg border border-dashed border-slate-800">
-                  <span className="text-xs font-medium text-slate-400 block mb-1.5">Suggestions de Tags par défaut :</span>
-                  <div className="flex flex-wrap gap-1">
-                    {defaultSuggestedTags.map((tag, i) => {
-                      const isAdded = tagsEnArray.includes(tag.toLowerCase());
-                      return (
-                        <button
-                          key={i}
-                          type="button"
-                          disabled={isAdded}
-                          onClick={() => {
-                            const newTags = [...tagsEnArray, tag.toLowerCase()];
-                            setTagsEnInput(newTags.join(", "));
-                          }}
-                          className={`text-[10px] px-2 py-0.5 rounded-full border transition-all ${
-                            isAdded 
-                              ? "bg-slate-800 text-slate-500 border-transparent cursor-not-allowed" 
-                              : "bg-slate-900 text-slate-300 border-slate-800 hover:border-indigo-500 hover:text-indigo-400"
-                          }`}
-                        >
-                          + {tag}
-                        </button>
-                      );
-                    })}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-gray-50 p-3 rounded-xl border">
+                  
+                  {/* Dynamic Display Component for Current Language Active Tags */}
+                  <div>
+                    <span className="text-xs font-medium text-gray-600 block mb-1.5 capitalize">
+                      Tags Actifs ({activeTagLang === "fr" ? "Français" : "Anglais"}) :
+                    </span>
+                    <div className="flex flex-wrap gap-1">
+                      {(activeTagLang === "fr" ? tagsFrArray : tagsEnArray).length === 0 ? (
+                        <span className="text-gray-400 text-[11px] italic">Aucun tag pour cette langue.</span>
+                      ) : (
+                        (activeTagLang === "fr" ? tagsFrArray : tagsEnArray).map((tag, i) => (
+                          <span 
+                            key={i} 
+                            className={`inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full ${
+                              activeTagLang === "fr" ? "bg-blue-50 text-blue-700" : "bg-purple-50 text-purple-700"
+                            }`}
+                          >
+                            {tag}
+                            <button 
+                              type="button"
+                              onClick={() => {
+                                if (activeTagLang === "fr") {
+                                  const remaining = tagsFrArray.filter(t => t !== tag);
+                                  setTagsFrInput(remaining.join(", "));
+                                } else {
+                                  const remaining = tagsEnArray.filter(t => t !== tag);
+                                  setTagsEnInput(remaining.join(", "));
+                                }
+                              }}
+                              className="hover:text-red-500 font-bold ml-0.5 text-xs"
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))
+                      )}
+                    </div>
                   </div>
+
+                  {/* Dynamic Suggestions Grid Area for Active Language */}
+                  <div className="bg-white p-2.5 rounded-lg border border-dashed border-gray-200">
+                    <span className="text-xs font-medium text-gray-600 block mb-1.5">
+                      Suggestions ({activeTagLang === "fr" ? "FR" : "EN"}) :
+                    </span>
+                    <div className="flex flex-wrap gap-1">
+                      {suggestedTagsMap[activeTagLang].map((tag, i) => {
+                        const currentTags = activeTagLang === "fr" ? tagsFrArray : tagsEnArray;
+                        const isAdded = currentTags.includes(tag) || currentTags.includes(tag.toLowerCase());
+                        return (
+                          <button
+                            key={i}
+                            type="button"
+                            disabled={isAdded}
+                            onClick={() => {
+                              const setter = activeTagLang === "fr" ? setTagsFrInput : setTagsEnInput;
+                              const current = activeTagLang === "fr" ? tagsFrArray : tagsEnArray;
+                              setter([...current, tag].join(", "));
+                            }}
+                            className={`text-[10px] px-2 py-0.5 rounded-full border transition-all ${
+                              isAdded 
+                                ? "bg-gray-100 text-gray-400 border-transparent cursor-not-allowed" 
+                                : "bg-white text-gray-600 border-gray-200 hover:border-indigo-500 hover:text-indigo-600"
+                            }`}
+                          >
+                            + {tag}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
                 </div>
               </div>
             </div>
@@ -2285,6 +2401,66 @@ export default function ReviewPage() {
                 );
               })()}
             </div>
+
+            {/* Sélection Interactive : Fichiers PNG à publier sur Etsy */}
+            {creation.png_paths && creation.png_paths.length > 0 && (
+              <div className="border-t border-slate-900 pt-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-slate-300 uppercase tracking-wider">
+                    Fichiers sélectionnés pour Etsy
+                  </label>
+                  <span className="text-[10px] text-slate-500 font-medium">
+                    {selectedFilesForEtsy.length}/{creation.png_paths.length} inclus
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 my-4">
+                  {creation.png_paths.map((file, i) => {
+                    const filePath = file;
+                    const isSelected = selectedFilesForEtsy.includes(filePath);
+
+                    return (
+                      <div
+                        key={i}
+                        onClick={() => handleToggleFileSelection(filePath)}
+                        className={`relative border rounded-xl overflow-hidden bg-white p-2 cursor-pointer transition-all select-none shadow-sm ${
+                          isSelected ? "border-indigo-600 ring-2 ring-indigo-100 shadow-md" : "border-gray-200 hover:border-gray-300"
+                        }`}
+                      >
+                        {/* Selection Checkbox Overlay Indicator */}
+                        <div className="absolute top-3 left-3 z-10">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => {}}
+                            className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                          />
+                        </div>
+
+                        {/* Thumbnail Mask Preview Canvas Container */}
+                        <div className="aspect-square w-full rounded-lg bg-gray-50 flex items-center justify-center overflow-hidden border border-gray-100">
+                          <img
+                            src={`${assetUrl(filePath)}?t=${new Date().getTime()}`}
+                            alt={`Element ${i + 1}`}
+                            className={`object-contain max-h-full max-w-full transition-opacity ${isSelected ? "opacity-100" : "opacity-40"}`}
+                          />
+                        </div>
+
+                        {/* Dynamic Meta Name Label Description Tag Footer */}
+                        <div className="mt-2 flex items-center justify-between px-1">
+                          <span className="text-[11px] font-medium text-gray-700 truncate">Fichier {i + 1}</span>
+                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                            isSelected ? "bg-indigo-100 text-indigo-800" : "bg-gray-100 text-gray-500"
+                          }`}>
+                            {isSelected ? "Inclu" : "Exclu"}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* Control & Publishing actions */}
             <div className="pt-4 border-t border-slate-900 space-y-4">

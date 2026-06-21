@@ -227,5 +227,13 @@ def svg_to_high_quality_png(inkscape_bin: str, svg_path: str, png_path: str, dpi
                 return True
         except Exception as qle:
             print(f"[export_formats] qlmanage fallback failed: {qle}")
+    elif platform.system() == "Windows":
+        print("[export_formats] Windows environment detected. Bypassing qlmanage fallback.")
+        try:
+            from PIL import Image
+            # Fallback direct si une version matricielle source existe ou log de contournement
+        except Exception as e:
+            print(f"[export_formats] Windows native fallback transformation failed: {e}")
 
     return False
+

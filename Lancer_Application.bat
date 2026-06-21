@@ -1,70 +1,53 @@
 @echo off
-setlocal enabledelayedexpansion
-title Configurator Auto-Heal - Automatisation Numeric Files
+title Validateur de Lancement - Automatisation Numeric Files
 
 echo ========================================================
-echo       VERIFICATION ET AUTO-INSTALLATION DES COMPOSANTS
+echo       VERIFICATION DES COMPOSANTS SYSTEME (MODE SECURE)
 echo ========================================================
 echo.
 
+:: 1. Dynamic Root Directory Capture
 set "PROJECT_DIR=%~dp0"
 if "%PROJECT_DIR:~-1%"=="\" set "PROJECT_DIR=%PROJECT_DIR:~0,-1%"
 
-:: -------------------------------------------------------------------
-:: 1. PYTHON CHECK & AUTO-INSTALLER
-:: -------------------------------------------------------------------
+echo [DEBUG] Racine detectee : "%PROJECT_DIR%"
+
+:: 2. Safety Check: Verify folder structure layout
+if not exist "%PROJECT_DIR%\backend" (
+    echo [ERREUR CRITIQUE] Dossier 'backend' introuvable dans : "%PROJECT_DIR%"
+    echo Assurez-vous que ce fichier .bat est bien PLACE A LA RACINE du projet.
+    echo.
+    pause
+    exit
+)
+
+:: 3. Validate Python Presence
 where python >nul 2>nul
 if %errorlevel% neq 0 (
-    echo [ALERTE] Python est introuvable sur cette machine.
-    echo [ACTION] Telechargement et installation silencieuse de Python en cours...
-    
-    set "PY_URL=https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
-    set "PY_EXE=%TEMP%\python_installer.exe"
-    
-    powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object System.Net.WebClient).DownloadFile('!PY_URL!', '!PY_EXE!')"
-    
-    echo [ACTION] Execution de l'installateur Python (Veuillez valider l'autorisation Windows)...
-    start /wait "" "!PY_EXE!" /quiet PrependPath=1 Include_test=0 Include_pip=1
-    
-    :: Refresh PATH for the current session
-    refreshenv >nul 2>nul || set "PATH=%PATH%;%PrependPath%"
-    echo [SUCCES] Python a ete configure.
-    echo.
+    echo [ALERTE] Python est absent. Telechargement de l'installateur...
+    powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe' -OutFile '$env:TEMP\py_setup.exe'"
+    echo [ACTION] Installation de Python (Veuillez accepter l'autorisation Windows)...
+    start /wait "" "%TEMP%\py_setup.exe" /quiet PrependPath=1 Include_pip=1
+    echo [SUCCES] Python installe.
 )
 
-:: -------------------------------------------------------------------
-:: 2. NODE.JS / NPM CHECK & AUTO-INSTALLER
-:: -------------------------------------------------------------------
+:: 4. Validate Node.js / NPM Presence
 where npm >nul 2>nul
 if %errorlevel% neq 0 (
-    echo [ALERTE] Node.js / NPM est introuvable sur cette machine.
-    echo [ACTION] Telechargement de l'installateur officiel de Node.js...
-    
-    set "NODE_URL=https://nodejs.org/dist/v20.11.1/node-v20.11.1-x64.msi"
-    set "NODE_MSI=%TEMP%\node_installer.msi"
-    
-    powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object System.Net.WebClient).DownloadFile('!NODE_URL!', '!NODE_MSI!')"
-    
-    echo [ACTION] Installation de Node.js en arriere-plan (Ecran de validation Windows)...
-    start /wait "" msiexec /i "!NODE_MSI!" /quiet /norestart
-    
-    echo [SUCCES] Node.js installe. Re-routage des variables systeme...
-    :: Manually inject default Node installation paths into current batch context
+    echo [ALERTE] Node.js / NPM est absent. Telechargement de l'installateur...
+    powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://nodejs.org/dist/v20.11.1/node-v20.11.1-x64.msi' -OutFile '$env:TEMP\node_setup.msi'"
+    echo [ACTION] Installation de Node.js (Veuillez accepter l'autorisation Windows)...
+    start /wait "" msiexec /i "%TEMP%\node_setup.msi" /quiet /norestart
     set "PATH=%PATH%;C:\Program Files\nodejs\"
-    echo.
+    echo [SUCCES] Node.js installe.
 )
 
-:: Double check execution tokens before proceeding to directory validation
-where python >nul 2>nul || goto CRASH_PAUSE
-where npm >nul 2>nul || goto CRASH_PAUSE
+:: Re-verify binaries natively before continuing
+where python >nul 2>nul || (echo Erreur fatale verification Python. & pause & exit)
+where npm >nul 2>nul || (echo Erreur fatale verification NPM. & pause & exit)
 
-echo [SUCCES] Tous les frameworks systemes sont opérationnels.
-echo [INFO] Passage a la synchronisation des modules locaux...
-echo.
-
-:: -------------------------------------------------------------------
-:: 3. CONTINUITY PIPELINE (VENV & NPM INSTALL)
-:: -------------------------------------------------------------------
+:: 5. Install Local Dependencies
+echo [INFO] Synchronisation du Backend Python...
 cd /d "%PROJECT_DIR%\backend"
 if not exist "venv" (
     python -m venv venv
@@ -72,15 +55,17 @@ if not exist "venv" (
 call venv\Scripts\activate
 pip install -r requirements.txt
 
+echo [INFO] Synchronisation du Frontend Next.js...
 cd /d "%PROJECT_DIR%\frontend"
 if not exist "node_modules" (
-    echo [INFO] Installation des modules Next.js (Operation longue au premier démarrage)...
+    echo Installation des packages Node.js (Cette operation peut prendre 1 a 2 minutes)...
     call npm install
 )
 
+:: 6. Launch Sequence
 echo.
 echo ========================================================
-echo       LANCEMENT DE L'APPLICATION - TOUT EST PRET        
+echo          DEMARRAGE DES SERVEURS EN COURS...
 echo ========================================================
 echo.
 
@@ -91,21 +76,21 @@ start "Backend_FastAPI" /b uvicorn app.main:app --port 8000
 cd /d "%PROJECT_DIR%\frontend"
 start "Frontend_NextJS" /b npm run dev
 
+echo Initialisation des ports reseaux (5 secondes)...
 timeout /t 5 /nobreak >nul
+
 start http://localhost:3000
 
-echo L'application est active. Appuyez sur une touche pour tout couper.
-pause
-
-taskkill /f /im python.exe /t >nul 2>nul
-taskkill /f /im node.exe /t >nul 2>nul
-exit
-
-:CRASH_PAUSE
 echo.
 echo ========================================================
-echo   [ERREUR] L'AUTO-INSTALLATEUR N'A PAS PU TOUT CONFIGURER
+echo L'APPLICATION EST ACTIVE SUR http://localhost:3000
+echo.
+echo IMPORTANT : LAISSEZ CETTE FENETRE OUVERTE POUR TRAVAILLER.
+echo Appuyez sur une touche ICI pour fermer proprement l'application.
 echo ========================================================
-echo Veuillez redemarrer le script en mode Administrateur (Clic droit > Executer en tant qu'administrateur).
 pause
+
+echo Fermeture des serveurs d'arriere-plan...
+taskkill /f /im python.exe /t >nul 2>nul
+taskkill /f /im node.exe /t >nul 2>nul
 exit

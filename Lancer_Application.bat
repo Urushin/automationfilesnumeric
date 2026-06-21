@@ -10,12 +10,12 @@ echo.
 set "PROJECT_DIR=%~dp0"
 if "%PROJECT_DIR:~-1%"=="\" set "PROJECT_DIR=%PROJECT_DIR:~0,-1%"
 
-echo [DEBUG] Racine detectee : "%PROJECT_DIR%"
+echo [DEBUG] Racine du projet : "%PROJECT_DIR%"
 
 :: 2. Safety Check: Verify folder structure layout
 if not exist "%PROJECT_DIR%\backend" (
-    echo [ERREUR CRITIQUE] Dossier 'backend' introuvable dans : "%PROJECT_DIR%"
-    echo Assurez-vous que ce fichier .bat est bien PLACE A LA RACINE du projet.
+    echo [ERREUR] Dossier backend introuvable dans : "%PROJECT_DIR%"
+    echo Placez ce fichier .bat A LA RACINE de votre projet.
     echo.
     pause
     exit
@@ -42,9 +42,9 @@ if %errorlevel% neq 0 (
     echo [SUCCES] Node.js installe.
 )
 
-:: Re-verify binaries natively before continuing
-where python >nul 2>nul || (echo Erreur fatale verification Python. & pause & exit)
-where npm >nul 2>nul || (echo Erreur fatale verification NPM. & pause & exit)
+:: Verification finale des binaires
+where python >nul 2>nul || (echo Erreur fatale Python absent. & pause & exit)
+where npm >nul 2>nul || (echo Erreur fatale NPM absent. & pause & exit)
 
 :: 5. Install Local Dependencies
 echo [INFO] Synchronisation du Backend Python...
@@ -58,7 +58,7 @@ pip install -r requirements.txt
 echo [INFO] Synchronisation du Frontend Next.js...
 cd /d "%PROJECT_DIR%\frontend"
 if not exist "node_modules" (
-    echo Installation des packages Node.js (Cette operation peut prendre 1 a 2 minutes)...
+    echo Installation des packages Node.js (Veuillez patienter 1 a 2 minutes)...
     call npm install
 )
 

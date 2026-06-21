@@ -211,8 +211,10 @@ async def _global_pipeline_generator(
             print(f"[pipeline] Stencil generation failed: {se}")
             comp_status["stencil"]["status"] = "failed"
             comp_status["stencil"]["error"] = str(se)
-            _update_creation(cid, current_step="Stencil failed, proceeding...", pipeline_status=json.dumps(comp_status))
-            yield _sse("stencil_failed", {"error": str(se)})
+            _update_creation(cid, status="failed", failed_reason=f"Stencil generation failed: {se}", current_step="Échec")
+            yield _sse("error", {"msg": f"Échec de génération d'image : {se}"})
+            return
+
 
         # ── STEP 2: Binarisation ─────────
         yield _status(2, "Binarisation (suppression anti-aliasing, seuillage Otsu)...")

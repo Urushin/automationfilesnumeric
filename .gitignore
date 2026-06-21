@@ -35,3 +35,8 @@ logs/
 .kilo/
 .kilocode/
 .vercel
+backend/storage/
+*.db-shm
+*.db-wal
+*db-journal
+

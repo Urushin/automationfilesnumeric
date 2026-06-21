@@ -211,9 +211,22 @@ async def _global_pipeline_generator(
             print(f"[pipeline] Stencil generation failed: {se}")
             comp_status["stencil"]["status"] = "failed"
             comp_status["stencil"]["error"] = str(se)
-            _update_creation(cid, status="failed", failed_reason=f"Stencil generation failed: {se}", current_step="Échec")
-            yield _sse("error", {"msg": f"Échec de génération d'image : {se}"})
+            
+            error_type = "GENERATION_FAILED"
+            error_msg = str(se)
+            if "BILLING_LIMIT_REACHED" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "credits are depleted" in error_msg or "Billing hard limit" in error_msg:
+                error_type = "PROVIDER_CREDITS_EXHAUSTED"
+                error_msg = "Vos clés API OpenAI/Gemini n'ont plus de crédits ou HuggingFace est inaccessible. Veuillez vérifier votre connexion et vos abonnements."
+                
+            _update_creation(cid, status="failed", failed_reason=error_msg, current_step="Échec")
+            yield _sse("error", {
+                "status": "error",
+                "error_type": error_type,
+                "msg": error_msg,
+                "message": error_msg
+            })
             return
+
 
 
         # ── STEP 2: Binarisation ─────────

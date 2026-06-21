@@ -337,8 +337,13 @@ def _try_dalle(openai_key: str, model: str, prompt: str, output_path: str, init_
                 quality="auto"
             )
     except Exception as oe:
-        print(f"[gpt-image-2 OPENAI ERROR] OpenAI image generation failed with {model}: {oe}")
-        raise ValueError(f"OpenAI gpt-image-2 image generation error: {oe}") from oe
+        import openai
+        error_msg = str(oe)
+        if "billing_hard_limit_reached" in error_msg or "Billing hard limit" in error_msg:
+            print("[CRITICAL] OpenAI Generation stopped: Your OpenAI API key has reached its billing hard limit!")
+            raise ValueError("OPENAI_BILLING_LIMIT_REACHED") from oe
+        raise ValueError(f"OpenAI error: {error_msg}") from oe
+
 
     saved_paths = []
     for idx, img_item in enumerate(response.data):
@@ -420,16 +425,24 @@ def _try_imagen3(banana_key: str, prompt: str, output_path: str, n: int = 1, vec
     imagen_prompt = prompt + "\nABSOLUTELY NO: color, photo, 3d, rendering, drop shadow, inner shadow, gradient, shading, gray tones, realistic texture, sketch, blurry, floating parts, text, watermark, signature. Pure flat 2D graphic only."
     
     client = genai.Client(api_key=banana_key.strip())
-    response = client.models.generate_images(
-        model='imagen-3.0-generate-002',
-        prompt=imagen_prompt,
-        config=types.GenerateImagesConfig(
-            number_of_images=n,
-            output_mime_type='image/jpeg'
+    try:
+        response = client.models.generate_images(
+            model='imagen-3.0-generate-002',
+            prompt=imagen_prompt,
+            config=types.GenerateImagesConfig(
+                number_of_images=n,
+                output_mime_type='image/jpeg'
+            )
         )
-    )
+    except Exception as ge:
+        error_msg = str(ge)
+        if "RESOURCE_EXHAUSTED" in error_msg or "credits are depleted" in error_msg:
+            print("[CRITICAL] Gemini Generation stopped: Your Google AI Studio prepayment credits are depleted!")
+            raise ValueError("GEMINI_BILLING_LIMIT_REACHED") from ge
+        raise ValueError(f"Gemini error: {error_msg}") from ge
     if not response.generated_images:
         raise ValueError("Aucune image générée par Google Imagen 3.")
+
     
     saved_paths = []
     for idx, gen_img in enumerate(response.generated_images):
@@ -555,9 +568,10 @@ def _generate_with_huggingface(prompt: str, output_path: str):
     payload = {"inputs": prompt}
 
 
-    resp = requests.post(url, json=payload, headers=headers, timeout=90, proxies={"http": None, "https": None})
+    resp = requests.post(url, json=payload, headers=headers, timeout=90)
     if resp.status_code != 200:
         raise ValueError(f"Hugging Face Inference API failed with status code {resp.status_code}: {resp.text}")
+
 
     with open(output_path, "wb") as f:
         f.write(resp.content)

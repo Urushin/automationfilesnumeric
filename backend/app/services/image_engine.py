@@ -550,9 +550,10 @@ def _generate_with_huggingface(prompt: str, output_path: str):
     if not settings.HUGGINGFACE_API_KEY:
         raise ValueError("Missing Hugging Face API key in HUGGINGFACE_API_KEY environment variable or database.")
     
-    url = "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell"
+    url = "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell"
     headers = {"Authorization": f"Bearer {settings.HUGGINGFACE_API_KEY}"}
     payload = {"inputs": prompt}
+
 
     resp = requests.post(url, json=payload, headers=headers, timeout=90, proxies={"http": None, "https": None})
     if resp.status_code != 200:

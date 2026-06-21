@@ -6,15 +6,16 @@ echo       VERIFICATION DES COMPOSANTS SYSTEME (MODE SECURE)
 echo ========================================================
 echo.
 
-:: 1. Dynamic Root Directory Capture
+:: 1. Dynamic Root Directory Capture Safely
 set "PROJECT_DIR=%~dp0"
 if "%PROJECT_DIR:~-1%"=="\" set "PROJECT_DIR=%PROJECT_DIR:~0,-1%"
 
-echo [DEBUG] Racine du projet : "%PROJECT_DIR%"
+:: Correction : Suppression des guillemets ici pour eviter le crash si le chemin a des parentheses
+echo [DEBUG] Racine du projet : %PROJECT_DIR%
 
 :: 2. Safety Check: Verify folder structure layout
 if not exist "%PROJECT_DIR%\backend" (
-    echo [ERREUR] Dossier backend introuvable dans : "%PROJECT_DIR%"
+    echo [ERREUR] Dossier backend introuvable.
     echo Placez ce fichier .bat A LA RACINE de votre projet.
     echo.
     pause
@@ -65,7 +66,7 @@ if not exist "node_modules" (
 :: 6. Launch Sequence
 echo.
 echo ========================================================
-echo          DEMARRAGE DES SERVEURS EN COURS...
+echo           DEMARRAGE DES SERVEURS EN COURS...
 echo ========================================================
 echo.
 

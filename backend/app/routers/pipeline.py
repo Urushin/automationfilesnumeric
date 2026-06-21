@@ -540,6 +540,18 @@ class SaveWorkspaceRequest(BaseModel):
     asset_type: Optional[str] = "master_stencil"
 
 
+class MockupItemConfig(BaseModel):
+    index: int
+    style: str
+
+
+class PipelineExecutionRequest(BaseModel):
+    creation_id: str
+    generate_real_mockup: bool = False
+    mockup_configs: list[MockupItemConfig] = []
+
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # BACKGROUND REPROCESSING FOR WORKSPACE & SELECTION
 # ─────────────────────────────────────────────────────────────────────────────

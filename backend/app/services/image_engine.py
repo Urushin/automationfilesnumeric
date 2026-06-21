@@ -1298,6 +1298,8 @@ def create_real_metal_mockup(stencil_path: str, backdrop_bytes: bytes, output_mo
     print(f"[MOCKUP SUCCESS] Premium metallic artwork mockup saved")
 
 
+from typing import Optional
+
 def generate_stencil_image(
     provider: str,
     banana_key: str,
@@ -1317,6 +1319,7 @@ def generate_stencil_image(
     strict_fidelity: bool = True,
     vectorize: bool = False,
     generate_real_mockup: bool = False,
+    mockup_configs: Optional[list] = None,
     n_images: int = 1
 ):
     result = _generate_stencil_image_core(
@@ -1341,49 +1344,53 @@ def generate_stencil_image(
     )
     
     if generate_real_mockup:
-        print("[image_engine] Premium 3D Real Mockup (Bois) dual-generation triggered...")
+        print(f"[image_engine] Starting multi-mockup generation loop. Total items: {len(mockup_configs) if mockup_configs else 0}")
         try:
-            # Setup explicit file coordinates
-            mockup_raw_path = output_path.replace("_source.png", "_mockup_raw.jpg").replace(".png", "_mockup_raw.jpg").replace(".jpg", "_mockup_raw.jpg")
-            mockup_commercial_path = output_path.replace("_source.png", "_mockup_commercial.jpg").replace(".png", "_mockup_commercial.jpg").replace(".jpg", "_mockup_commercial.jpg")
+            configs_to_process = mockup_configs if (mockup_configs and len(mockup_configs) > 0) else [{"index": 0, "style": "default_wood"}]
             
-            # 1. Generate the shared room backdrop bytes using the theme
-            backdrop_bytes = generate_mockup_backdrop(theme, openai_key)
-            
-            import tempfile
-            temp_bg = tempfile.mktemp(suffix=".jpg")
-            with open(temp_bg, 'wb') as f:
-                f.write(backdrop_bytes)
+            for config in configs_to_process:
+                idx = config.get("index") if isinstance(config, dict) else config.index
+                theme_style = config.get("style") if isinstance(config, dict) else config.style
                 
-            from .mockup_engine import composite_stencil_on_bg
-            
-            # EXPORT 1: Generate the clean, raw lifestyle scene (apply_tp_overlay=False)
-            print("[image_engine] Compositing raw 3D mockup asset...")
-            composite_stencil_on_bg(
-                stencil_path=output_path, 
-                bg_path=temp_bg, 
-                output_path=mockup_raw_path, 
-                material="matte_black_metal",
-                apply_tp_overlay=False
-            )
-            
-            # EXPORT 2: Generate the protected e-commerce scene (apply_tp_overlay=True)
-            print("[image_engine] Compositing commercial framed 3D mockup asset...")
-            composite_stencil_on_bg(
-                stencil_path=output_path, 
-                bg_path=temp_bg, 
-                output_path=mockup_commercial_path, 
-                material="matte_black_metal",
-                apply_tp_overlay=True
-            )
-            
-            result["mockup_raw_path"] = mockup_raw_path
-            result["mockup_commercial_path"] = mockup_commercial_path
-            
-            if os.path.exists(temp_bg):
-                os.remove(temp_bg)
+                print(f"[image_engine] Rendering item index {idx} using design theme style: {theme_style}")
+                
+                backdrop_bytes = generate_mockup_backdrop(theme_style, openai_key)
+                
+                temp_bg = output_path.replace("_source.png", f"_temp_bg_{idx}.jpg").replace(".png", f"_temp_bg_{idx}.jpg").replace(".jpg", f"_temp_bg_{idx}.jpg")
+                with open(temp_bg, 'wb') as f:
+                    f.write(backdrop_bytes)
+                    
+                from .mockup_engine import composite_stencil_on_bg
+                
+                mockup_raw_path = output_path.replace("_source.png", f"_mockup_raw_{idx}.jpg").replace(".png", f"_mockup_raw_{idx}.jpg").replace(".jpg", f"_mockup_raw_{idx}.jpg")
+                mockup_commercial_path = output_path.replace("_source.png", f"_mockup_commercial_{idx}.jpg").replace(".png", f"_mockup_commercial_{idx}.jpg").replace(".jpg", f"_mockup_commercial_{idx}.jpg")
+                
+                print(f"[image_engine] Compositing raw 3D mockup asset for index {idx}...")
+                composite_stencil_on_bg(
+                    stencil_path=output_path, 
+                    bg_path=temp_bg, 
+                    output_path=mockup_raw_path, 
+                    material="matte_black_metal",
+                    apply_tp_overlay=False
+                )
+                
+                print(f"[image_engine] Compositing commercial framed 3D mockup asset for index {idx}...")
+                composite_stencil_on_bg(
+                    stencil_path=output_path, 
+                    bg_path=temp_bg, 
+                    output_path=mockup_commercial_path, 
+                    material="matte_black_metal",
+                    apply_tp_overlay=True
+                )
+                
+                if idx == 0:
+                    result["mockup_raw_path"] = mockup_raw_path
+                    result["mockup_commercial_path"] = mockup_commercial_path
+                
+                if os.path.exists(temp_bg):
+                    os.remove(temp_bg)
         except Exception as mockup_err:
-            print(f"[image_engine] Premium Mockup dual-processing failed: {mockup_err}")
+            print(f"[image_engine] Premium Mockup loop processing failed: {mockup_err}")
             import traceback
             traceback.print_exc()
             

@@ -399,11 +399,16 @@ def stream_dalle_image_progressive(openai_key: str, prompt: str, init_image_path
         "stream": True
     }
     
-    response = requests.post(url, headers=headers, json=payload, stream=True, timeout=60)
-    response.raise_for_status()
-    for chunk in response.iter_content(chunk_size=1024):
-        if chunk:
-            yield chunk
+    try:
+        response = requests.post(url, headers=headers, json=payload, stream=True, timeout=60)
+        response.raise_for_status()
+        for chunk in response.iter_content(chunk_size=1024):
+            if chunk:
+                yield chunk
+    except Exception as e:
+        print(f"[image_engine] progressive stream failed: {e}")
+        yield b""
+
 
 
 def _try_imagen3(banana_key: str, prompt: str, output_path: str, n: int = 1, vectorize: bool = False) -> list[str]:

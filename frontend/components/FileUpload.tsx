@@ -92,11 +92,7 @@ export default function FileUpload({ onFileSelect, onFilesSelect, multiple = fal
         accept="image/*,.svg"
         className="hidden"
       />
-      {multiple && (
-        <div className="p-3 bg-amber-500/10 border border-amber-500/25 rounded-xl text-xs text-amber-200 leading-relaxed">
-          ⚠️ <strong>Avertissement :</strong> Les fichiers importés ensemble doivent contenir le <strong>même sujet</strong> et élément, car ils partageront le même thème de design. Ils doivent également avoir <strong>exactement le même format</strong>.
-        </div>
-      )}
+
 
       {selectedFiles.length === 0 ? (
         <div

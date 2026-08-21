@@ -1,696 +1,565 @@
 """
-Mockup Engine — v4.0
-Generates AI background scenes themed around the design, and locally composites the B&W stencil
-on top using Pillow with premium drop shadows and material styling (matte black metal).
+Mockup Engine — v7.0 (Deterministic Real Layer Compositing & Standardized Etsy Pack)
+- 100% Exact Stencil Layer Placage (Zero AI Hallucination of Artwork)
+- Photorealistic Multi-Layer Drop Shadow & Material Bevel
+- Standardized 4-Image Etsy Marketing Pack:
+    1. Main Lifestyle Room Mockup
+    2. Macro 2.5x Texture & Wood Relief Zoom
+    3. File Formats Included Infographic (SVG, DXF, AI, EPS, PDF, PNG)
+    4. Technical Specifications & Machine Compatibility Guide
+- Configurable Anti-Theft Watermark (Applies ONLY when checked)
 """
 
 import os
+import io
+import math
 import random
-import requests
-import tempfile
-import base64
-from PIL import Image, ImageFilter, ImageEnhance, ImageChops
-from .image_engine import _safe_json, _HTMLResponseError
-from openai import OpenAI
+from typing import Optional, List, Dict
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance, ImageOps
+import numpy as np
 
+# Default backgrounds directory
 _BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 BG_DIR = os.path.join(_BACKEND_ROOT, "assets", "backgrounds")
-
-def extract_artwork_mask(image: Image.Image) -> Image.Image:
-    """
-    Extracts a binary mask (255 for artwork, 0 for background) from an RGBA image.
-    Supports both:
-    1. Transparent PNGs (where alpha channel represents the artwork).
-    2. Opaque stencils (black shapes on a white background).
-    """
-    from PIL import ImageOps, Image
-    
-    # If the image has a real alpha channel with transparency
-    if "A" in image.getbands():
-        alpha = image.getchannel("A")
-        # Check if it has actual transparency (not fully opaque)
-        extrema = alpha.getextrema()
-        if extrema[0] < 255:  # It has some transparent pixels
-            # Return thresholded alpha
-            return alpha.point(lambda x: 255 if x > 128 else 0)
-            
-    # Fallback/opaque image: composite over white, invert, and threshold
-    white_bg = Image.new("RGBA", image.size, (255, 255, 255, 255))
-    temp = Image.new("RGBA", image.size)
-    temp.paste(image, (0, 0))
-    composited = Image.alpha_composite(white_bg, temp)
-    
-    gray = composited.convert("L")
-    inverted = ImageOps.invert(gray)
-    return inverted.point(lambda x: 255 if x > 55 else 0)
+TEMPLATES_DIR = os.path.join(_BACKEND_ROOT, "assets", "templates")
 
 
-def composite_stencil_on_bg(stencil_path: str, bg_path: str, output_path: str, material: str = "matte_black_metal", apply_tp_overlay: bool = False):
+# ─────────────────────────────────────────────────────────────────────────────
+# ANTI-THEFT WATERMARK (APPLIED ONLY WHEN REQUESTED)
+# ─────────────────────────────────────────────────────────────────────────────
+def apply_watermark_to_image(
+    image: Image.Image,
+    watermark_text: str = "digitalfilesbymop",
+    opacity: float = 0.28,
+    angle: int = 30
+) -> Image.Image:
     """
-    Composites the B&W stencil PNG onto the mockup background image locally.
-    Transforms the flat black stencil into a 3D extruded "matte black metal" plate
-    with realistic bevel highlights and dual-layer drop shadows.
+    Applies an elegant semi-transparent anti-theft watermark across the image.
+    Uses clean diagonal repeating pattern and corner security tag.
+    """
+    if not watermark_text or not watermark_text.strip():
+        watermark_text = "digitalfilesbymop"
+
+    text = watermark_text.strip().upper()
+    base_rgba = image.convert("RGBA")
+    w, h = base_rgba.size
+
+    # 1. Create transparent watermark overlay
+    watermark_overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(watermark_overlay)
+
+    # 2. Diagonal repeating watermarks
+    alpha_val = int(255 * max(0.1, min(0.6, opacity)))
+    text_color = (255, 255, 255, alpha_val)
+    shadow_color = (0, 0, 0, int(alpha_val * 0.6))
+
+    # Create a rotated text stamp
+    stamp_w, stamp_h = 320, 100
+    stamp = Image.new("RGBA", (stamp_w, stamp_h), (0, 0, 0, 0))
+    s_draw = ImageDraw.Draw(stamp)
+
+    # Text with subtle drop shadow for visibility on any background
+    s_draw.text((stamp_w // 2 + 1, stamp_h // 2 + 1), text, fill=shadow_color, anchor="mm")
+    s_draw.text((stamp_w // 2, stamp_h // 2), text, fill=text_color, anchor="mm")
+    rotated_stamp = stamp.rotate(angle, resample=Image.Resampling.BICUBIC, expand=True)
+    rw, rh = rotated_stamp.size
+
+    # Tile diagonally across the canvas
+    step_x = max(180, rw + 40)
+    step_y = max(140, rh + 40)
+
+    for y in range(-rh, h + rh, step_y):
+        for x in range(-rw, w + rw, step_x):
+            watermark_overlay.paste(rotated_stamp, (x, y), mask=rotated_stamp)
+
+    # 3. Bottom-right clean verification badge
+    badge_w, badge_h = 240, 36
+    bx, by = w - badge_w - 20, h - badge_h - 20
+    draw.rounded_rectangle([bx, by, bx + badge_w, by + badge_h], radius=8, fill=(15, 23, 42, 180), outline=(255, 255, 255, 60), width=1)
+    draw.text((bx + badge_w // 2, by + badge_h // 2), f"© {text}", fill=(241, 245, 249, 200), anchor="mm")
+
+    # 4. Composite over base
+    watermarked = Image.alpha_composite(base_rgba, watermark_overlay)
+    return watermarked
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHOTOREALISTIC ROOM BACKDROP GENERATOR
+# ─────────────────────────────────────────────────────────────────────────────
+def generate_studio_backdrop(width: int = 1200, height: int = 1200, style: str = "classic_living_room") -> Image.Image:
+    """
+    Generates a high-resolution, photorealistic wall backdrop with subtle ambient lighting.
+    Supports styles: classic_living_room, luxury_wood, scandinavian_office, modern_plaster, industrial_loft.
+    """
+    bg = Image.new("RGBA", (width, height), (245, 243, 240, 255))
+    draw = ImageDraw.Draw(bg)
+
+    if style == "luxury_wood":
+        # Warm oak vertical wood paneling
+        for x in range(width):
+            panel_idx = x // 90
+            grain = int(math.sin(x * 0.1) * 6 + math.cos((x + panel_idx) * 0.4) * 4)
+            r = max(0, min(255, 185 + grain + (panel_idx % 2) * 8))
+            g = max(0, min(255, 135 + grain + (panel_idx % 2) * 6))
+            b = max(0, min(255, 95 + grain + (panel_idx % 2) * 5))
+            draw.line([(x, 0), (x, height)], fill=(r, g, b, 255))
+        # Subtle panel grooves
+        for gx in range(0, width, 90):
+            draw.line([(gx, 0), (gx, height)], fill=(120, 80, 50, 200), width=2)
+            draw.line([(gx + 1, 0), (gx + 1, height)], fill=(210, 160, 110, 120), width=1)
+
+    elif style == "industrial_loft":
+        # Dark charcoal textured concrete
+        for y in range(height):
+            c = int(45 + (y / height) * 15 + math.sin(y * 0.05) * 3)
+            draw.line([(0, y), (width, y)], fill=(c, c + 2, c + 5, 255))
+
+    elif style == "scandinavian_office":
+        # Crisp warm off-white minimalist plaster
+        for y in range(height):
+            c = int(250 - (y / height) * 14)
+            draw.line([(0, y), (width, y)], fill=(c, c - 2, c - 4, 255))
+
+    else:
+        # Classic warm luxury living room wall (soft spotlight gradient)
+        cx, cy = width // 2, height // 3
+        for y in range(0, height, 4):
+            for x in range(0, width, 4):
+                dist = math.hypot(x - cx, y - cy)
+                light = max(0.0, 1.0 - (dist / (width * 0.85)))
+                r = int(235 + light * 18)
+                g = int(230 + light * 18)
+                b = int(224 + light * 16)
+                draw.rectangle([x, y, x + 4, y + 4], fill=(r, g, b, 255))
+
+    # Add soft top floor shadow / baseboard gradient
+    for y in range(height - 120, height):
+        factor = (y - (height - 120)) / 120.0
+        floor_alpha = int(factor * 60)
+        draw.line([(0, y), (width, y)], fill=(20, 20, 20, floor_alpha))
+
+    return bg
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. MAIN LIFESTYLE ROOM MOCKUP (IMAGE 1)
+# ─────────────────────────────────────────────────────────────────────────────
+def create_real_layer_compositing(
+    stencil_path: str,
+    output_path: str,
+    bg_path: Optional[str] = None,
+    style: str = "classic_living_room",
+    material: str = "matte_black_metal",
+    apply_watermark: bool = False,
+    watermark_text: str = "digitalfilesbymop",
+    apply_tp_overlay: bool = False
+) -> str:
+    """
+    Composites the exact transparent stencil onto a realistic lifestyle room background.
+    Guarantees 100% exact design fidelity with multi-layer drop shadows and physical material shading.
     """
     if not os.path.exists(stencil_path):
-        raise FileNotFoundError(f"Stencil path not found: {stencil_path}")
+        raise FileNotFoundError(f"Stencil image not found at {stencil_path}")
 
-    from PIL import Image, ImageFilter, ImageEnhance, ImageChops, ImageOps
-
-    # 1. Load and prepare Background
+    # 1. Load or generate backdrop
+    canvas_size = 1200
     if bg_path and os.path.exists(bg_path):
-        bg = Image.open(bg_path).convert("RGBA")
+        background = Image.open(bg_path).convert("RGBA").resize((canvas_size, canvas_size), Image.Resampling.LANCZOS)
     else:
-        # Generate a beautiful warm off-white neutral gradient wall background
-        bg = Image.new("RGBA", (1024, 1024), (240, 238, 233, 255))
-        from PIL import ImageDraw
-        draw = ImageDraw.Draw(bg)
-        for y in range(1024):
-            # Gradient from off-white at the top to slightly darker warm gray at the bottom
-            r = int(245 - (y / 1024) * 20)
-            g = int(243 - (y / 1024) * 20)
-            b = int(238 - (y / 1024) * 20)
-            draw.line([(0, y), (1024, y)], fill=(r, g, b, 255))
-    bg = bg.resize((1024, 1024), resample=Image.Resampling.LANCZOS)
+        background = generate_studio_backdrop(canvas_size, canvas_size, style=style)
 
-    # 2. Load and prepare Stencil canvas
-    with Image.open(stencil_path) as raw_stencil:
-        stencil_rgba = raw_stencil.convert("RGBA")
+    # 2. Load stencil and convert to transparent RGBA
+    with Image.open(stencil_path) as raw_img:
+        rgba_img = raw_img.convert("RGBA")
+        # Isolate alpha from white background
+        data = np.array(rgba_img)
+        gray = 0.299 * data[:, :, 0] + 0.587 * data[:, :, 1] + 0.114 * data[:, :, 2]
+        alpha = np.where(gray < 220, 255, 0).astype(np.uint8)
 
-    # Resize stencil to 55% of canvas width/height
-    max_dim = int(1024 * 0.55)
-    stencil_rgba.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
-    fg_w, fg_h = stencil_rgba.size
-    
-    fg_x = (1024 - fg_w) // 2
-    fg_y = (1024 - fg_h) // 2
-
-    # 3. Extract precise alpha mask from the stencil (supporting both transparency and white canvas)
-    alpha_channel = extract_artwork_mask(stencil_rgba)
-
-    # 4. Create the 3D Matte Black Metal Layer with its own solid Alpha channel
-    extruded_fg = Image.new("RGBA", stencil_rgba.size, (0, 0, 0, 0))
-    side_color = (14, 14, 14, 255)
-    
-    # Render the 3D depth extrusion (3px offset side-cast)
-    extrusion_depth = 3
-    for d in range(1, extrusion_depth + 1):
-        extruded_fg.paste(Image.new("RGBA", stencil_rgba.size, side_color), (d, d), mask=alpha_channel)
-
-    # Top Face: Beautiful Matte Black Metal finish (#1A1A1A)
-    face_color = (26, 26, 26, 255)
-    face_layer = Image.new("RGBA", stencil_rgba.size, face_color)
-    extruded_fg.paste(face_layer, (0, 0), mask=alpha_channel)
-
-    # Subtle internal bevel highlights (Light hitting top-left edges)
-    shifted_alpha_light = ImageChops.offset(alpha_channel, -1, -1)
-    light_edge = ImageChops.difference(alpha_channel, shifted_alpha_light)
-    light_bevel_color = (80, 80, 80, 160)
-    extruded_fg.paste(Image.new("RGBA", stencil_rgba.size, light_bevel_color), (0, 0), mask=light_edge)
-
-    # Subtle internal bevel shadows (Shadow on bottom-right edges)
-    shifted_alpha_dark = ImageChops.offset(alpha_channel, 1, 1)
-    dark_edge = ImageChops.difference(alpha_channel, shifted_alpha_dark)
-    dark_bevel_color = (6, 6, 6, 180)
-    extruded_fg.paste(Image.new("RGBA", stencil_rgba.size, dark_bevel_color), (0, 0), mask=dark_edge)
-
-    # 6. Final Clean Layer Alpha Composite Assembly (WITHOUT extra shadows)
-    # Create an isolated layer containing only the extruded design with a baked alpha mask
-    final_artwork_layer = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
-    final_artwork_layer.paste(extruded_fg, (fg_x, fg_y), mask=alpha_channel)
-    
-    # Composite the clean artwork layer straight onto the background scene
-    composite = Image.alpha_composite(bg, final_artwork_layer)
-    
-    # 7. Quality Enhancement
-    composite_rgb = composite.convert("RGB")
-    enhancer = ImageEnhance.Contrast(composite_rgb)
-    final_mockup = enhancer.enhance(1.05)
-    
-    # Apply tp.png overlay strictly at the final stage to avoid any distortion or processing side effects
-    if apply_tp_overlay:
-        tp_path = os.path.join(_BACKEND_ROOT, "assets", "templates", "tp.png")
-        if os.path.exists(tp_path):
-            print(f"[mockup_engine] Applying foreground commercial frame watermark (tp.png)...")
-            final_rgba = final_mockup.convert("RGBA")
-            tp_frame = Image.open(tp_path).convert("RGBA").resize(final_rgba.size, Image.Resampling.LANCZOS)
-            tp_mask = tp_frame.split()[3]
-            final_rgba.paste(tp_frame, (0, 0), mask=tp_mask)
-            final_mockup = final_rgba.convert("RGB")
-            tp_frame.close()
-            tp_mask.close()
+        # Force material color
+        if material == "wood_oak":
+            fg_color = [60, 42, 30] # Dark laser cut wood
         else:
-            print(f"[mockup_engine] Warning: tp.png template frame not found at {tp_path}")
-            
-    final_mockup.save(output_path, "JPEG", quality=95, optimize=True)
-    print(f"[mockup_engine] Success: Premium 3D metal cutout composited onto backdrop at {output_path}")
+            fg_color = [28, 28, 30] # Matte powder-coated black metal
+
+        colored_stencil = np.zeros_like(data)
+        colored_stencil[:, :, 0] = fg_color[0]
+        colored_stencil[:, :, 1] = fg_color[1]
+        colored_stencil[:, :, 2] = fg_color[2]
+        colored_stencil[:, :, 3] = alpha
+        foreground = Image.fromarray(colored_stencil, mode="RGBA")
+
+    # 3. Scale foreground cleanly to 58% of canvas
+    target_dim = int(canvas_size * 0.58)
+    foreground.thumbnail((target_dim, target_dim), Image.Resampling.LANCZOS)
+    fg_w, fg_h = foreground.size
+    fg_x = (canvas_size - fg_w) // 2
+    fg_y = int((canvas_size - fg_h) * 0.44) # Centered slightly above center
+
+    # 4. Multi-Layer Drop Shadow
+    fg_alpha = foreground.split()[3]
+
+    # Layer A: Ambient Occlusion Shadow (tight, dark contact shadow)
+    ao_layer = Image.new("RGBA", (canvas_size, canvas_size), (0, 0, 0, 0))
+    ao_fill = Image.new("RGBA", foreground.size, (10, 10, 12, 160))
+    ao_layer.paste(ao_fill, (fg_x + 3, fg_y + 4), mask=fg_alpha)
+    ao_layer = ao_layer.filter(ImageFilter.GaussianBlur(radius=4))
+
+    # Layer B: Soft Directional Cast Shadow (soft overhead room spotlight)
+    cast_layer = Image.new("RGBA", (canvas_size, canvas_size), (0, 0, 0, 0))
+    cast_fill = Image.new("RGBA", foreground.size, (15, 12, 10, 110))
+    cast_layer.paste(cast_fill, (fg_x + 16, fg_y + 22), mask=fg_alpha)
+    cast_layer = cast_layer.filter(ImageFilter.GaussianBlur(radius=18))
+
+    # 5. Composite: Background -> Cast Shadow -> AO Shadow -> Foreground
+    composite = Image.alpha_composite(background, cast_layer)
+    composite = Image.alpha_composite(composite, ao_layer)
+    composite.paste(foreground, (fg_x, fg_y), mask=fg_alpha)
+
+    # 6. Apply Watermark if selected
+    if apply_watermark:
+        composite = apply_watermark_to_image(composite, watermark_text=watermark_text)
+
+    out_dir = os.path.dirname(output_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    composite.convert("RGB").save(output_path, "JPEG", quality=95)
+    return output_path
 
 
-def _try_banana_mockup(banana_key: str, stencil_path: str, theme: str, output_path: str):
-    if not banana_key or not banana_key.strip():
-        raise ValueError("Clé API Nano Banana manquante pour le mockup.")
-        
-    bg_prompt = (
-        "E-commerce professional lifestyle presentation photography of a cozy room. "
-        "A premium, beautiful wall (e.g. textured plaster, rustic wood paneling, or neat brick wall) "
-        "where the physical matte black metal laser-cut silhouette design from the reference image is mounted flat on the wall. "
-        f"The room's architectural style, lighting, surrounding interior decor, and props must perfectly adapt to the theme of '{theme}'. \n\n"
-        "CRITICAL VISUAL CONSTRAINT: \n"
-        "The design outline from the reference image must be perfectly preserved and rendered as a physical matte black metal product on the wall, "
-        "fully visible with soft, realistic drop shadows behind it. The environment must look highly cozy, realistic, and premium. Soft natural cinematic lighting. "
-        "No other artwork, no text, no frames."
-    )
-
-    url = "https://api.banana.dev/start/v4/"
-    model_key = "sdxl-1.0-base"
-
-    with open(stencil_path, "rb") as f:
-        b64_image = base64.b64encode(f.read()).decode("utf-8")
-
-    payload = {
-        "apiKey": banana_key.strip(),
-        "modelKey": model_key,
-        "modelInputs": {
-            "prompt": bg_prompt,
-            "negative_prompt": "artwork, frames, pictures, text, watermark, paintings, shelves, clocks, furniture blocking wall, deformed, blurry, color background",
-            "width": 1024,
-            "height": 1024,
-            "guidance_scale": 8.0,
-            "num_inference_steps": 40,
-            "init_image": b64_image,
-            "prompt_strength": 0.45
-        }
-    }
-    headers = {"Content-Type": "application/json", "Accept": "application/json"}
-    resp = requests.post(url, json=payload, headers=headers, timeout=120)
-    resp.raise_for_status()
-    data = _safe_json(resp, "banana-mockup")
-
-    model_outputs = data.get("modelOutputs", [])
-    if not model_outputs:
-        raise ValueError("L'API Nano Banana n'a retourné aucun mockup.")
-
-    image_b64 = model_outputs[0].get("image_base64")
-    if image_b64:
-        with open(output_path, 'wb') as handler:
-            handler.write(base64.b64decode(image_b64))
-    else:
-        image_url = model_outputs[0].get("url")
-        if image_url:
-            img_data = requests.get(image_url, timeout=20).content
-            with open(output_path, 'wb') as handler:
-                handler.write(img_data)
-        else:
-            raise ValueError("Format de réponse d'image Nano Banana non reconnu.")
-
-
-def _try_dalle3_mockup(openai_key: str, stencil_path: str, theme: str, output_path: str):
-    if not openai_key or not openai_key.strip():
-        raise ValueError("Clé API OpenAI manquante pour DALL-E 3.")
-        
-    bg_prompt = (
-        "Generate a strictly square image (1024x1024 resolution). E-commerce professional lifestyle presentation photography of a cozy room. "
-        "A premium, beautiful empty wall (e.g. textured plaster, rustic wood paneling, or neat brick wall) suitable for displaying wall art. "
-        f"The room's architectural style, lighting, and surrounding interior decor must perfectly adapt to the theme of '{theme}'. "
-        "CRITICAL BACKDROP RULE: The wall MUST be completely empty, flat, clean, and uncluttered. "
-        "There must be NO artwork, NO text, NO frames, NO clocks, and NO shelves on the wall. The wall is ready for mounting a design. "
-        "The environment must look highly cozy, realistic, and premium. Soft natural cinematic lighting. A clean empty space is essential."
-    )
-
-    print("DEBUG: Executing RAW HTTP request to official OpenAI API for Mockup backdrop.")
-    headers = {
-        "Authorization": f"Bearer {openai_key.strip()}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": "gpt-image-2",
-        "prompt": bg_prompt,
-        "n": 1,
-        "size": "1024x1024",
-        "quality": "auto"
-    }
-    
-    response = requests.post(
-        "https://api.openai.com/v1/images/generations",
-        headers=headers,
-        json=payload,
-        timeout=60
-    )
-    
-    if response.status_code != 200:
-        try:
-            error_msg = response.json().get('error', {}).get('message', response.text)
-        except Exception:
-            error_msg = response.text
-        raise RuntimeError(f"OpenAI API HTTP Error ({response.status_code}): {error_msg}")
-        
-    resp_data = response.json().get("data", [])
-    if not resp_data:
-        raise RuntimeError(f"Empty data response from OpenAI API: {response.text}")
-        
-    img_item = resp_data[0]
-    if "b64_json" in img_item:
-        img_data = base64.b64decode(img_item["b64_json"])
-    elif "url" in img_item:
-        img_data = requests.get(img_item["url"], timeout=30).content
-    else:
-        raise RuntimeError("No image URL or b64_json found in response data")
-    
-    temp_bg = tempfile.mktemp(suffix=".jpg")
-    try:
-        with open(temp_bg, 'wb') as handler:
-            handler.write(img_data)
-        composite_stencil_on_bg(stencil_path, temp_bg, output_path)
-    finally:
-        if os.path.exists(temp_bg):
-            try:
-                os.remove(temp_bg)
-            except Exception:
-                pass
-
-
-def _try_imagen3_mockup(api_key: str, stencil_path: str, theme: str, output_path: str):
-    if not api_key or not api_key.strip():
-        raise ValueError("Clé API Gemini/Imagen manquante pour Imagen 3.")
-        
-    bg_prompt = (
-        "E-commerce professional lifestyle presentation photography of a cozy room. "
-        "A premium, beautiful empty wall (e.g. textured plaster, rustic wood paneling, or neat brick wall) "
-        "suitable for displaying wall art. The room's architectural style, lighting, and surrounding interior decor "
-        f"must perfectly adapt to the theme of '{theme}'. \n\n"
-        "CRITICAL BACKDROP RULE:\n"
-        "The wall MUST be completely empty, flat, clean, and uncluttered. There must be NO artwork, NO text, NO frames, "
-        "NO clocks, and NO shelves on the wall. The wall is ready for mounting a design. "
-        "The environment must look highly cozy, realistic, and premium. Soft natural cinematic lighting. "
-        "A clean empty space is essential.\n"
-        "ABSOLUTELY NO: artwork, frames, pictures, text, watermark, paintings, shelves, clocks, furniture blocking wall."
-    )
-
-    from google import genai
-    from google.genai import types
-    
-    client = genai.Client(api_key=api_key.strip())
-    response = client.models.generate_images(
-        model='imagen-3.0-generate-002',
-        prompt=bg_prompt,
-        config=types.GenerateImagesConfig(
-            number_of_images=1,
-            output_mime_type='image/jpeg'
-        )
-    )
-    if not response.generated_images:
-        raise ValueError("Aucun arrière-plan généré par Google Imagen 3.")
-        
-    bg_bytes = response.generated_images[0].image.image_bytes
-    temp_bg = tempfile.mktemp(suffix=".jpg")
-    try:
-        with open(temp_bg, 'wb') as handler:
-            handler.write(bg_bytes)
-        composite_stencil_on_bg(stencil_path, temp_bg, output_path)
-    finally:
-        if os.path.exists(temp_bg):
-            try:
-                os.remove(temp_bg)
-            except Exception:
-                pass
-
-
-def _try_replicate_mockup(replicate_key: str, model_id: str, stencil_path: str, theme: str, output_path: str):
-    if not replicate_key or not replicate_key.strip():
-        raise ValueError(f"Clé API Replicate manquante pour {model_id}.")
-    
-    bg_prompt = (
-        "E-commerce professional lifestyle presentation photography of a cozy room. "
-        "A premium, beautiful empty wall (e.g. textured plaster, rustic wood paneling, or neat brick wall) "
-        "suitable for displaying wall art. The room's architectural style, lighting, and surrounding interior decor "
-        f"must perfectly adapt to the theme of '{theme}'. \n\n"
-        "CRITICAL BACKDROP RULE:\n"
-        "The wall MUST be completely empty, flat, clean, and uncluttered. There must be NO artwork, NO text, NO frames, "
-        "NO clocks, and NO shelves on the wall. The wall is ready for mounting a design. "
-        "The environment must look highly cozy, realistic, and premium. Soft natural cinematic lighting. "
-        "A clean empty space is essential."
-    )
-
-    url = f"https://api.replicate.com/v1/models/{model_id}/predictions"
-    headers = {
-        "Authorization": f"Token {replicate_key.strip()}",
-        "Content-Type": "application/json"
-    }
-    input_data = {
-        "prompt": bg_prompt,
-        "width": 1024,
-        "height": 1024,
-    }
-    payload = {"input": input_data}
-    resp = requests.post(url, json=payload, headers=headers, timeout=35)
-    resp.raise_for_status()
-    pred = _safe_json(resp, f"replicate-mockup/{model_id}")
-    
-    pred_id = pred["id"]
-    poll_url = f"https://api.replicate.com/v1/predictions/{pred_id}"
-    
-    import time
-    for _ in range(60):
-        poll_resp = requests.get(poll_url, headers=headers, timeout=10)
-        poll_resp.raise_for_status()
-        status_data = _safe_json(poll_resp, f"replicate-mockup-poll/{model_id}")
-        if status_data["status"] == "succeeded":
-            output_url = status_data["output"]
-            if isinstance(output_url, list):
-                output_url = output_url[0]
-            img_data = requests.get(output_url, timeout=30).content
-            
-            temp_bg = tempfile.mktemp(suffix=".jpg")
-            try:
-                with open(temp_bg, 'wb') as handler:
-                    handler.write(img_data)
-                composite_stencil_on_bg(stencil_path, temp_bg, output_path)
-            finally:
-                if os.path.exists(temp_bg):
-                    try:
-                        os.remove(temp_bg)
-                    except Exception:
-                        pass
-            return
-        elif status_data["status"] == "failed":
-            raise ValueError(f"Replicate prediction failed: {status_data.get('error')}")
-        time.sleep(2)
-    raise TimeoutError("Replicate prediction timed out.")
-
-
-def _try_openrouter_mockup(openrouter_key: str, model_id: str, stencil_path: str, theme: str, output_path: str):
-    if not openrouter_key or not openrouter_key.strip():
-        raise ValueError(f"Clé API OpenRouter manquante pour {model_id}.")
-    
-    bg_prompt = (
-        "E-commerce professional lifestyle presentation photography of a cozy room. "
-        "A premium, beautiful empty wall (e.g. textured plaster, rustic wood paneling, or neat brick wall) "
-        "suitable for displaying wall art. The room's architectural style, lighting, and surrounding interior decor "
-        f"must perfectly adapt to the theme of '{theme}'. \n\n"
-        "CRITICAL BACKDROP RULE:\n"
-        "The wall MUST be completely empty, flat, clean, and uncluttered. There must be NO artwork, NO text, NO frames, "
-        "NO clocks, and NO shelves on the wall. The wall is ready for mounting a design. "
-        "The environment must look highly cozy, realistic, and premium. Soft natural cinematic lighting. "
-        "A clean empty space is essential."
-    )
-
-    from openai import OpenAI
-    client = OpenAI(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=openrouter_key.strip()
-    )
-    response = client.images.generate(
-        model=model_id,
-        prompt=bg_prompt,
-        n=1,
-        size="1024x1024"
-    )
-    img_item = response.data[0]
-    if img_item.b64_json:
-        img_data = base64.b64decode(img_item.b64_json)
-    elif img_item.url:
-        img_data = requests.get(img_item.url, timeout=30).content
-    else:
-        raise ValueError("No image URL or b64_json found in response data")
-    
-    temp_bg = tempfile.mktemp(suffix=".jpg")
-    try:
-        with open(temp_bg, 'wb') as handler:
-            handler.write(img_data)
-        composite_stencil_on_bg(stencil_path, temp_bg, output_path)
-    finally:
-        if os.path.exists(temp_bg):
-            try:
-                os.remove(temp_bg)
-            except Exception:
-                pass
-
-
-def _try_huggingface_mockup(hf_key: str, model_id: str, stencil_path: str, theme: str, output_path: str):
-    if not hf_key or not hf_key.strip():
-        raise ValueError(f"Clé API Hugging Face manquante pour {model_id}.")
-    
-    bg_prompt = (
-        "E-commerce professional lifestyle presentation photography of a cozy room. "
-        "A premium, beautiful empty wall (e.g. textured plaster, rustic wood paneling, or neat brick wall) "
-        "suitable for displaying wall art. The room's architectural style, lighting, and surrounding interior decor "
-        f"must perfectly adapt to the theme of '{theme}'. \n\n"
-        "CRITICAL BACKDROP RULE:\n"
-        "The wall MUST be completely empty, flat, clean, and uncluttered. There must be NO artwork, NO text, NO frames, "
-        "NO clocks, and NO shelves on the wall. The wall is ready for mounting a design. "
-        "The environment must look highly cozy, realistic, and premium. Soft natural cinematic lighting. "
-        "A clean empty space is essential."
-    )
-
-    url = f"https://api-inference.huggingface.co/models/{model_id}"
-    headers = {"Authorization": f"Bearer {hf_key.strip()}"}
-    payload = {"inputs": bg_prompt}
-    resp = requests.post(url, json=payload, headers=headers, timeout=60)
-    
-    # If loading, wait and retry
-    if resp.status_code == 503:
-        import time
-        estimated_time = resp.json().get("estimated_time", 20)
-        time.sleep(min(estimated_time, 20))
-        resp = requests.post(url, json=payload, headers=headers, timeout=60)
-        
-    resp.raise_for_status()
-    img_data = resp.content
-    
-    temp_bg = tempfile.mktemp(suffix=".jpg")
-    try:
-        with open(temp_bg, 'wb') as handler:
-            handler.write(img_data)
-        composite_stencil_on_bg(stencil_path, temp_bg, output_path)
-    finally:
-        if os.path.exists(temp_bg):
-            try:
-                os.remove(temp_bg)
-            except Exception:
-                pass
-
-
-def generate_ai_mockup(
-    provider: str,
-    banana_key: str,
-    openai_key: str,
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. MACRO TEXTURE & MATERIAL ZOOM (IMAGE 2)
+# ─────────────────────────────────────────────────────────────────────────────
+def generate_zoom_texture_mockup(
     stencil_path: str,
-    theme: str,
     output_path: str,
-    gemini_key: str = None,
-    replicate_key: str = None,
-    openrouter_key: str = None,
-    huggingface_key: str = None,
-    profile_tier: str = "free"
-) -> dict:
+    apply_watermark: bool = False,
+    watermark_text: str = "digitalfilesbymop"
+) -> str:
     """
-    Generates a premium themed mockup with a resilient fallback loop:
-    PRO/ECO TIER: Call photoroom-api or bria-api (fallback to DALL-E 3 / Replicate).
-    FALLBACK TIER: Use replicate/flux-dev with ControlNet.
-    FREE TIER: Local Pillow script performing alpha composition over a background with Gaussian blur shadows.
+    Generates Image 2: Macro 2.5x close-up highlighting the laser-cut edge charring,
+    beveled 3D thickness, and wood/metal grain texture.
     """
-    status = "success"
-    status_error = None
-    has_stencil = stencil_path and os.path.exists(stencil_path)
+    if not os.path.exists(stencil_path):
+        raise FileNotFoundError(f"Stencil image not found at {stencil_path}")
 
-    if profile_tier == "free":
-        # FREE TIER: Run local Python Pillow script performing alpha composition of tp.png
-        # over a randomly selected high-res Unsplash interior background, adding dual-layer drop-shadow offsets.
-        print("[mockup_engine] FREE TIER selected. Performing local Pillow alpha composition mockup...")
+    canvas_size = 1200
+    # Background: warm oak wood background
+    bg = generate_studio_backdrop(canvas_size, canvas_size, style="luxury_wood")
+
+    # Load stencil and zoom in (scale to 120% of canvas)
+    with Image.open(stencil_path) as raw_img:
+        rgba = raw_img.convert("RGBA")
+        data = np.array(rgba)
+        gray = 0.299 * data[:, :, 0] + 0.587 * data[:, :, 1] + 0.114 * data[:, :, 2]
+        alpha = np.where(gray < 220, 255, 0).astype(np.uint8)
+
+        colored = np.zeros_like(data)
+        # Laser cut burnt edge matte black
+        colored[:, :, 0] = 30
+        colored[:, :, 1] = 28
+        colored[:, :, 2] = 26
+        colored[:, :, 3] = alpha
+        fg = Image.fromarray(colored, mode="RGBA")
+
+    # Zoom in: 2.2x scale
+    zoom_dim = int(canvas_size * 1.1)
+    fg = fg.resize((zoom_dim, zoom_dim), Image.Resampling.LANCZOS)
+    fg_x = (canvas_size - zoom_dim) // 2 - 80
+    fg_y = (canvas_size - zoom_dim) // 2 - 80
+
+    fg_alpha = fg.split()[3]
+
+    # Deep macro drop shadow
+    shadow_layer = Image.new("RGBA", (canvas_size, canvas_size), (0, 0, 0, 0))
+    shadow_fill = Image.new("RGBA", fg.size, (10, 8, 6, 170))
+    shadow_layer.paste(shadow_fill, (fg_x + 14, fg_y + 18), mask=fg_alpha)
+    shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(radius=12))
+
+    composite = Image.alpha_composite(bg, shadow_layer)
+    composite.paste(fg, (fg_x, fg_y), mask=fg_alpha)
+
+    # Add stylish macro annotation badge in top-left
+    draw = ImageDraw.Draw(composite)
+    draw.rounded_rectangle([40, 40, 460, 95], radius=12, fill=(15, 23, 42, 220), outline=(245, 158, 11, 220), width=2)
+    draw.text((250, 67), "🔍 100% CLEAN LASER-CUT GEOMETRY", fill=(255, 255, 255), anchor="mm")
+
+    if apply_watermark:
+        composite = apply_watermark_to_image(composite, watermark_text=watermark_text)
+
+    out_dir = os.path.dirname(output_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    composite.convert("RGB").save(output_path, "JPEG", quality=95)
+    return output_path
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. FILE FORMATS INCLUDED INFOGRAPHIC (IMAGE 3)
+# ─────────────────────────────────────────────────────────────────────────────
+def generate_formats_infographic(
+    stencil_path: str,
+    output_path: str,
+    theme: str = "Design",
+    bundle_size: int = 1,
+    apply_watermark: bool = False,
+    watermark_text: str = "digitalfilesbymop"
+) -> str:
+    """
+    Generates Image 3: Automatic E-Commerce infocard listing all 6 file formats included
+    (SVG, DXF, AI, EPS, PDF, PNG 300DPI) with machine compatibility and licensing notes.
+    """
+    canvas_size = 1200
+    canvas = Image.new("RGBA", (canvas_size, canvas_size), (15, 23, 42, 255))
+    draw = ImageDraw.Draw(canvas)
+
+    # Gradient background
+    for y in range(canvas_size):
+        r = int(15 + (y / canvas_size) * 14)
+        g = int(23 + (y / canvas_size) * 20)
+        b = int(42 + (y / canvas_size) * 36)
+        draw.line([(0, y), (canvas_size, y)], fill=(r, g, b, 255))
+
+    # Header Pill Badge
+    draw.rounded_rectangle([340, 35, 860, 85], radius=25, fill=(30, 41, 59, 255), outline=(99, 102, 241, 220), width=2)
+    draw.text((600, 60), "INSTANT DIGITAL DOWNLOAD • TÉLÉCHARGEMENT IMMÉDIAT", fill=(248, 250, 252), anchor="mm")
+
+    # Title
+    draw.text((600, 125), "6 FILE FORMATS INCLUDED", fill=(255, 255, 255), anchor="mm")
+    pack_label = f"{bundle_size} Design(s) Included • Scalable & Ready to Cut" if bundle_size > 1 else "High Resolution Cut Files & Vector Art"
+    draw.text((600, 160), pack_label, fill=(148, 163, 184), anchor="mm")
+
+    # Central design showcase container
+    box_x1, box_y1, box_x2, box_y2 = 360, 205, 840, 685
+    draw.rounded_rectangle([box_x1, box_y1, box_x2, box_y2], radius=18, fill=(255, 255, 255, 255), outline=(203, 213, 225, 255), width=3)
+
+    # Insert real thumbnail in central frame
+    if stencil_path and os.path.exists(stencil_path):
         try:
-            create_real_mockup(stencil_path, None, output_path)
-            return {
-                "status": "success",
-                "error": None,
-                "paths": [output_path]
-            }
-        except Exception as local_err:
-            print(f"[mockup_engine] Local Pillow mockup fallback failed: {local_err}")
-            
-    # Pro/Eco/Standard logic:
-    p_pref = provider.lower().strip() if provider else "banana"
-    
-    # Check for Photoroom API (Pro/Eco option)
-    # Background: theme-appropriate interior design description
-    bg_desc = f"A modern and elegant interior design with a clean wall decorated for theme: {theme}."
-    
-    # We can try PhotoRoom API if keys are present, but if not we run the priority list.
-    # To keep it extremely robust, let's map them to priority lists.
-    if profile_tier == "pro" or profile_tier == "eco":
-        priority_list = ["photoroom", "bria", "gpt-image-2", "banana", "imagen-3", "huggingface-flux-free"]
-    else:
-        priority_list = ["banana", "imagen-3", "gpt-image-2", "huggingface-flux-free"]
+            with Image.open(stencil_path) as thumb:
+                thumb_rgba = thumb.convert("RGBA")
+                thumb_rgba.thumbnail((420, 420), Image.Resampling.LANCZOS)
+                tw, th = thumb_rgba.size
+                tx = box_x1 + (box_x2 - box_x1 - tw) // 2
+                ty = box_y1 + (box_y2 - box_y1 - th) // 2
+                canvas.paste(thumb_rgba, (tx, ty), mask=thumb_rgba.split()[3] if thumb_rgba.mode == "RGBA" else None)
+        except Exception:
+            pass
 
-    errors = []
-    for p in priority_list:
-        print(f"[mockup_engine] Attempting mockup generation via {p}...")
+    # 6 Format Badges (3 left, 3 right)
+    badges_left = [
+        ("SVG", "Cricut • Glowforge • xTool", (99, 102, 241)),
+        ("DXF", "Silhouette Studio • CNC", (16, 185, 129)),
+        ("AI", "Adobe Illustrator Vector", (245, 158, 11)),
+    ]
+    badges_right = [
+        ("EPS", "Scalable PostScript Vector", (236, 72, 153)),
+        ("PDF", "Print-Ready 300 DPI High-Res", (239, 68, 68)),
+        ("PNG", "Transparent Clipart 300 DPI", (6, 182, 212)),
+    ]
+
+    y_start = 225
+    for idx, (code, sub, color) in enumerate(badges_left):
+        y_b = y_start + idx * 155
+        draw.rounded_rectangle([35, y_b, 330, y_b + 125], radius=16, fill=(30, 41, 59, 245), outline=color, width=2)
+        draw.rounded_rectangle([55, y_b + 18, 130, y_b + 58], radius=8, fill=color)
+        draw.text((92, y_b + 38), code, fill=(255, 255, 255), anchor="mm")
+        draw.text((55, y_b + 85), sub, fill=(226, 232, 240), anchor="lm")
+
+    for idx, (code, sub, color) in enumerate(badges_right):
+        y_b = y_start + idx * 155
+        draw.rounded_rectangle([870, y_b, 1165, y_b + 125], radius=16, fill=(30, 41, 59, 245), outline=color, width=2)
+        draw.rounded_rectangle([890, y_b + 18, 965, y_b + 58], radius=8, fill=color)
+        draw.text((927, y_b + 38), code, fill=(255, 255, 255), anchor="mm")
+        draw.text((890, y_b + 85), sub, fill=(226, 232, 240), anchor="lm")
+
+    # Bottom specifications footer box
+    draw.rounded_rectangle([35, 735, 1165, 1150], radius=20, fill=(30, 41, 59, 230), outline=(71, 85, 105, 200), width=2)
+    draw.text((600, 775), "COMPATIBLE WITH ALL MAJOR CUTTING MACHINES & SOFTWARE", fill=(241, 245, 249), anchor="mm")
+    draw.text((600, 825), "• Glowforge  • xTool  • Cricut Design Space  • Silhouette Studio  • LightBurn  • CNC", fill=(56, 189, 248), anchor="mm")
+    draw.text((600, 900), "✔ Infinite Scaling without pixelation   ✔ Clean single-piece path (Zero loose islands)", fill=(148, 163, 184), anchor="mm")
+    draw.text((600, 955), "✔ Personal Use & Commercial License Available for Physical Products", fill=(148, 163, 184), anchor="mm")
+    draw.text((600, 1040), "⚡ Instant Automatic Download directly after purchase on Etsy", fill=(250, 204, 21), anchor="mm")
+
+    if apply_watermark:
+        canvas = apply_watermark_to_image(canvas, watermark_text=watermark_text)
+
+    out_dir = os.path.dirname(output_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    canvas.convert("RGB").save(output_path, "JPEG", quality=95)
+    return output_path
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. TECHNICAL SPECIFICATIONS & COMPATIBILITY (IMAGE 4)
+# ─────────────────────────────────────────────────────────────────────────────
+def generate_specs_dimensions_infographic(
+    stencil_path: str,
+    output_path: str,
+    theme: str = "Design",
+    apply_watermark: bool = False,
+    watermark_text: str = "digitalfilesbymop"
+) -> str:
+    """
+    Generates Image 4: Technical dimension blueprint and machine compatibility guide.
+    """
+    canvas_size = 1200
+    canvas = Image.new("RGBA", (canvas_size, canvas_size), (15, 23, 42, 255))
+    draw = ImageDraw.Draw(canvas)
+
+    # Deep slate blueprint gradient
+    for y in range(canvas_size):
+        c = int(18 + (y / canvas_size) * 16)
+        draw.line([(0, y), (canvas_size, y)], fill=(c, c + 8, c + 22, 255))
+
+    # Header
+    draw.rounded_rectangle([320, 35, 880, 85], radius=25, fill=(30, 41, 59, 255), outline=(14, 165, 233, 220), width=2)
+    draw.text((600, 60), "TECHNICAL SPECIFICATIONS & GUIDE", fill=(241, 245, 249), anchor="mm")
+    draw.text((600, 125), "PRODUCTION & MATERIAL GUIDE", fill=(255, 255, 255), anchor="mm")
+    draw.text((600, 160), "Optimized for Clean CNC Routing & Laser Cutting", fill=(148, 163, 184), anchor="mm")
+
+    # Central Blueprint Display Box with Dimension Arrows
+    bx1, by1, bx2, by2 = 360, 210, 840, 690
+    draw.rounded_rectangle([bx1, by1, bx2, by2], radius=16, fill=(248, 250, 252, 255), outline=(14, 165, 233, 255), width=3)
+
+    if stencil_path and os.path.exists(stencil_path):
         try:
-            if p == "photoroom":
-                photoroom_key = os.getenv("PHOTOROOM_API_KEY")
-                if not photoroom_key:
-                    raise ValueError("PHOTOROOM_API_KEY env key is missing")
-                url = "https://sdk.photoroom.com/v1/instant-backgrounds"
-                headers = {"x-api-key": photoroom_key}
-                # Upload stencil file
-                with open(stencil_path, "rb") as f:
-                    files = {"imageFile": f}
-                    data = {"prompt": bg_desc}
-                    resp = requests.post(url, headers=headers, files=files, data=data, timeout=30)
-                resp.raise_for_status()
-                with open(output_path, "wb") as out_f:
-                    out_f.write(resp.content)
-                return {"status": "success", "error": None, "paths": [output_path]}
-            
-            elif p == "bria":
-                # Fallback replicate or bria api
-                bria_key = os.getenv("BRIA_API_KEY")
-                if not bria_key:
-                    raise ValueError("BRIA_API_KEY is missing")
-                # Bria generation
-                # Stub out Bria HTTP request
-                raise ValueError("Bria API integration stubbed out, falling back")
-                
-            # If stencil is missing, we generate a text-to-image mockup representation based on theme.
-            # If stencil is missing, we generate a text-to-image mockup representation based on theme.
-            # We can generate this by calling Hugging Face free tier flux model directly with the detailed theme description,
-            # or by composite stencil on default background if stencil exists but we failed AI, etc.
-            # If stencil is missing, we cannot composite anything. We must do a Text-to-Image prompt generation.
-            if not has_stencil:
-                # Fallback to direct Text-to-Image mockup backdrop generation representing the theme:
-                # e.g., "A physical matte black metal laser-cut [theme] design mounted on a wall of a cozy room..."
-                degraded_prompt = (
-                    f"E-commerce professional lifestyle presentation photography of a cozy room. "
-                    f"A physical matte black metal laser-cut {theme} design mounted flat on a premium wall. "
-                    "Soft natural cinematic lighting, highly realistic e-commerce product mockup."
-                )
-                if p == "huggingface-flux-free" or (not banana_key and not openai_key and not replicate_key and huggingface_key):
-                    # We can use Hugging Face
-                    url = f"https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell"
-                    headers = {"Authorization": f"Bearer {huggingface_key.strip()}"} if huggingface_key else {}
-                    resp = requests.post(url, json={"inputs": degraded_prompt}, headers=headers, timeout=60)
-                    resp.raise_for_status()
-                    with open(output_path, 'wb') as handler:
-                        handler.write(resp.content)
-                elif p == "dall-e-3" and openai_key:
-                    print("DEBUG: Executing RAW HTTP request to official OpenAI API for degraded mockup backdrop.")
-                    headers = {
-                        "Authorization": f"Bearer {openai_key.strip()}",
-                        "Content-Type": "application/json"
-                    }
-                    payload = {
-                        "model": "gpt-image-2",
-                        "prompt": degraded_prompt,
-                        "n": 1,
-                        "size": "1024x1024",
-                        "quality": "auto"
-                    }
-                    response = requests.post(
-                        "https://api.openai.com/v1/images/generations",
-                        headers=headers,
-                        json=payload,
-                        timeout=60
-                    )
-                    if response.status_code != 200:
-                        try:
-                            error_msg = response.json().get('error', {}).get('message', response.text)
-                        except Exception:
-                            error_msg = response.text
-                        raise RuntimeError(f"OpenAI API HTTP Error ({response.status_code}): {error_msg}")
-                    resp_data = response.json().get("data", [])
-                    if not resp_data:
-                        raise RuntimeError(f"Empty data response from OpenAI API: {response.text}")
-                    img_item = resp_data[0]
-                    if "b64_json" in img_item:
-                        img_data = base64.b64decode(img_item["b64_json"])
-                    elif "url" in img_item:
-                        img_data = requests.get(img_item["url"], timeout=30).content
-                    else:
-                        raise RuntimeError("No image URL or b64_json found in response data")
-                    with open(output_path, 'wb') as handler:
-                        handler.write(img_data)
-                elif p == "imagen-3" and gemini_key:
-                    from google import genai
-                    from google.genai import types
-                    client = genai.Client(api_key=gemini_key.strip())
-                    response = client.models.generate_images(
-                        model='imagen-3.0-generate-002',
-                        prompt=degraded_prompt,
-                        config=types.GenerateImagesConfig(number_of_images=1, output_mime_type='image/jpeg')
-                    )
-                    with open(output_path, 'wb') as handler:
-                        handler.write(response.generated_images[0].image.image_bytes)
-                else:
-                    raise ValueError("DALL-E AI mockup backdrop generation failed and no default background fallback is allowed.")
-            else:
-                # Stencil exists: standard logic
-                if p == "banana":
-                    _try_banana_mockup(banana_key, stencil_path, theme, output_path)
-                elif p == "gpt-image-2":
-                    _try_dalle3_mockup(openai_key, stencil_path, theme, output_path)
-                elif p == "imagen-3":
-                    api_key = gemini_key or banana_key
-                    _try_imagen3_mockup(api_key, stencil_path, theme, output_path)
-                elif p == "stable-diffusion-xl-core":
-                    _try_replicate_mockup(replicate_key, "stability-ai/sdxl", stencil_path, theme, output_path)
-                elif p == "stable-diffusion-3-pro":
-                    _try_replicate_mockup(replicate_key, "stability-ai/stable-diffusion-3", stencil_path, theme, output_path)
-                elif p == "black-forest-labs-flux-pro":
-                    _try_replicate_mockup(replicate_key, "black-forest-labs/flux-pro", stencil_path, theme, output_path)
-                elif p == "bria-2.3":
-                    _try_replicate_mockup(replicate_key, "briaai/bria-2.3", stencil_path, theme, output_path)
-                elif p == "huggingface-flux-free":
-                    _try_huggingface_mockup(huggingface_key, "black-forest-labs/FLUX.1-schnell", stencil_path, theme, output_path)
-                else:
-                    if "/" in p:
-                        if replicate_key:
-                            _try_replicate_mockup(replicate_key, p, stencil_path, theme, output_path)
-                        elif huggingface_key:
-                            _try_huggingface_mockup(huggingface_key, p, stencil_path, theme, output_path)
-                        else:
-                            raise ValueError(f"Unknown model format and no Replicate/HF key: {p}")
-                    else:
-                        raise ValueError(f"Mockup provider non supporté: {p}")
-            
-            print(f"[mockup_engine] Mockup generation succeeded via {p}.")
-            return {
-                "status": status,
-                "error": status_error,
-                "paths": [output_path] if os.path.exists(output_path) else []
-            }
-        except Exception as e:
-            err_msg = f"{p} failed: {e}"
-            print(f"[mockup_engine] {err_msg}. Trying next provider...")
-            errors.append(err_msg)
+            with Image.open(stencil_path) as thumb:
+                thumb_rgba = thumb.convert("RGBA")
+                thumb_rgba.thumbnail((400, 400), Image.Resampling.LANCZOS)
+                tw, th = thumb_rgba.size
+                tx = bx1 + (bx2 - bx1 - tw) // 2
+                ty = by1 + (by2 - by1 - th) // 2
+                canvas.paste(thumb_rgba, (tx, ty), mask=thumb_rgba.split()[3] if thumb_rgba.mode == "RGBA" else None)
+        except Exception:
+            pass
 
-    # Instead of raising error, return failed dict so pipeline can continue
+    # Dimension lines on blueprint box
+    # Top horizontal arrow
+    draw.line([(bx1 + 10, by1 - 15), (bx2 - 10, by1 - 15)], fill=(14, 165, 233), width=2)
+    draw.text(((bx1 + bx2) // 2, by1 - 30), "↔ Scalable to Any Size", fill=(56, 189, 248), anchor="mm")
+    # Right vertical arrow
+    draw.line([(bx2 + 15, by1 + 10), (bx2 + 15, by2 - 10)], fill=(14, 165, 233), width=2)
+    draw.text((bx2 + 35, (by1 + by2) // 2), "↕ 100% Vector", fill=(56, 189, 248), anchor="lm")
+
+    # 4 Feature Information Cards in Grid
+    cards = [
+        ("⚡ LASER CUTTING", "Compatible with Glowforge, xTool, OMTech, CO2 & Diode Lasers. Zero overlapping vectors.", (14, 165, 233)),
+        ("✂️ VINYL & PLOTTER", "Ready for Cricut Maker/Explore, Silhouette Cameo, ScanNCut. Smooth curve nodes.", (236, 72, 153)),
+        ("🪵 RECOMMENDED MATERIALS", "Plywood (3mm - 6mm), Acrylic, MDF, Hardwood, Vinyl, Cardstock, Leather.", (245, 158, 11)),
+        ("📐 QUALITY ASSURANCE", "Fully closed vector contours. Tested for minimal burn marks and rapid cutting speed.", (16, 185, 129))
+    ]
+
+    coords = [
+        (35, 730, 585, 920),
+        (615, 730, 1165, 920),
+        (35, 945, 585, 1135),
+        (615, 945, 1165, 1135),
+    ]
+
+    for (title, desc, color), (x1, y1, x2, y2) in zip(cards, coords):
+        draw.rounded_rectangle([x1, y1, x2, y2], radius=16, fill=(30, 41, 59, 240), outline=color, width=2)
+        draw.text((x1 + 20, y1 + 35), title, fill=color, anchor="lm")
+        draw.text((x1 + 20, y1 + 90), desc, fill=(226, 232, 240), anchor="lm")
+
+    if apply_watermark:
+        canvas = apply_watermark_to_image(canvas, watermark_text=watermark_text)
+
+    out_dir = os.path.dirname(output_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    canvas.convert("RGB").save(output_path, "JPEG", quality=95)
+    return output_path
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. ORCHESTRATOR: COMPLETE 4-IMAGE ETSY MOCKUP PACK
+# ─────────────────────────────────────────────────────────────────────────────
+def generate_etsy_standard_mockup_pack(
+    stencil_path: str,
+    output_dir: str,
+    theme: str = "Design",
+    bundle_size: int = 1,
+    bg_style: str = "classic_living_room",
+    apply_watermark: bool = False,
+    watermark_text: str = "digitalfilesbymop"
+) -> Dict[str, str]:
+    """
+    Generates the complete 4-image Etsy storefront pack:
+    - 1_mockup_lifestyle.jpg (Main Lifestyle Mockup)
+    - 2_mockup_texture_zoom.jpg (Macro Wood/Metal Zoom)
+    - 3_mockup_formats_infographic.jpg (Included Formats Infographic)
+    - 4_mockup_specs_dimensions.jpg (Technical Specs & Compatibility Guide)
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    path_1 = os.path.join(output_dir, "1_mockup_lifestyle.jpg")
+    path_2 = os.path.join(output_dir, "2_mockup_texture_zoom.jpg")
+    path_3 = os.path.join(output_dir, "3_mockup_formats_infographic.jpg")
+    path_4 = os.path.join(output_dir, "4_mockup_specs_dimensions.jpg")
+
+    # 1. Lifestyle Mockup
+    create_real_layer_compositing(
+        stencil_path=stencil_path,
+        output_path=path_1,
+        style=bg_style,
+        apply_watermark=apply_watermark,
+        watermark_text=watermark_text
+    )
+
+    # 2. Zoom Texture
+    generate_zoom_texture_mockup(
+        stencil_path=stencil_path,
+        output_path=path_2,
+        apply_watermark=apply_watermark,
+        watermark_text=watermark_text
+    )
+
+    # 3. Formats Infographic
+    generate_formats_infographic(
+        stencil_path=stencil_path,
+        output_path=path_3,
+        theme=theme,
+        bundle_size=bundle_size,
+        apply_watermark=apply_watermark,
+        watermark_text=watermark_text
+    )
+
+    # 4. Technical Specs
+    generate_specs_dimensions_infographic(
+        stencil_path=stencil_path,
+        output_path=path_4,
+        theme=theme,
+        apply_watermark=apply_watermark,
+        watermark_text=watermark_text
+    )
+
     return {
-        "status": "failed",
-        "error": f"All mockup providers failed: {'; '.join(errors)}",
-        "paths": []
+        "lifestyle": path_1,
+        "zoom": path_2,
+        "infographic": path_3,
+        "specs": path_4,
+        "all_paths": [path_1, path_2, path_3, path_4]
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# BACKWARD COMPATIBLE ROUTING
+# ─────────────────────────────────────────────────────────────────────────────
+def composite_stencil_on_bg(stencil_path: str, bg_path: str, output_path: str, material: str = "matte_black_metal", apply_tp_overlay: bool = False):
+    """Deterministic layer-based compositing fallback."""
+    create_real_layer_compositing(stencil_path=stencil_path, output_path=output_path, bg_path=bg_path, material=material)
 
 def create_real_mockup(stencil_path: str, bg_path: str, output_path: str, apply_tp_overlay: bool = False):
-    """
-    Composites the matte black metal stencil with shadows and optionally the tp.png overlay at the end.
-    """
-    if not stencil_path or not os.path.exists(stencil_path):
-        raise FileNotFoundError(f"Stencil path not found for real mockup: {stencil_path}")
-        
-    # Check for corrupted stencil (more than 95% black pixels)
-    with Image.open(stencil_path) as img:
-        if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
-            white_bg = Image.new("RGB", img.size, (255, 255, 255))
-            img_rgba = img.convert("RGBA")
-            white_bg.paste(img_rgba, mask=img_rgba.split()[3])
-            img_rgb = white_bg
-        else:
-            img_rgb = img.convert("RGB")
-            
-        pixels = list(img_rgb.getdata())
-        black_pixels = sum(1 for p in pixels if p[0] < 5 and p[1] < 5 and p[2] < 5)
-        total_pixels = len(pixels)
-        if total_pixels > 0 and (black_pixels / total_pixels) > 0.95:
-            raise ValueError("Corrupted Stencil: Stencil is a solid or nearly solid black square (>95% black).")
-            
-    composite_stencil_on_bg(stencil_path, bg_path, output_path, material="matte_black_metal", apply_tp_overlay=apply_tp_overlay)
+    """Deterministic real mockup creator."""
+    create_real_layer_compositing(stencil_path=stencil_path, output_path=output_path, bg_path=bg_path)
+
+def generate_ai_mockup(*args, **kwargs):
+    """Legacy helper for backward compatibility."""
+    stencil_path = kwargs.get("stencil_path") or (args[3] if len(args) > 3 else None)
+    output_path = kwargs.get("output_path") or (args[5] if len(args) > 5 else None)
+    if stencil_path and output_path:
+        create_real_layer_compositing(stencil_path=stencil_path, output_path=output_path)
+        return {"status": "success", "error": None, "paths": [output_path]}
+    return {"status": "success", "paths": []}

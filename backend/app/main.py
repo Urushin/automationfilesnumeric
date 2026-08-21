@@ -1,4 +1,8 @@
 import os
+for key in list(os.environ.keys()):
+    if os.environ[key] == "None":
+        del os.environ[key]
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -44,6 +48,13 @@ try:
             "pipeline_status":         "ALTER TABLE creations ADD COLUMN pipeline_status TEXT",
             "selected_images_raw":     "ALTER TABLE creations ADD COLUMN selected_images_raw TEXT",
             "source_png_variants_raw": "ALTER TABLE creations ADD COLUMN source_png_variants_raw TEXT",
+            "mockup_paths_raw":        "ALTER TABLE creations ADD COLUMN mockup_paths_raw TEXT",
+            "real_mockup_paths_raw":   "ALTER TABLE creations ADD COLUMN real_mockup_paths_raw TEXT",
+            "dxf_paths_raw":           "ALTER TABLE creations ADD COLUMN dxf_paths_raw TEXT",
+            "ai_paths_raw":            "ALTER TABLE creations ADD COLUMN ai_paths_raw TEXT",
+            "eps_paths_raw":           "ALTER TABLE creations ADD COLUMN eps_paths_raw TEXT",
+            "mockup_styles":           "ALTER TABLE creations ADD COLUMN mockup_styles TEXT",
+            "apply_watermark":         "ALTER TABLE creations ADD COLUMN apply_watermark BOOLEAN DEFAULT 0",
         }
 
         for col_name, sql in migrations_creations.items():
@@ -57,8 +68,15 @@ try:
 
         migrations_settings = {
             "mockup_background_path": "ALTER TABLE settings ADD COLUMN mockup_background_path VARCHAR",
+            "watermark_text":         "ALTER TABLE settings ADD COLUMN watermark_text VARCHAR DEFAULT 'digitalfilesbymop'",
+            "default_apply_watermark": "ALTER TABLE settings ADD COLUMN default_apply_watermark BOOLEAN DEFAULT 0",
+            "mockup_pack_count":      "ALTER TABLE settings ADD COLUMN mockup_pack_count INTEGER DEFAULT 4",
             "banana_key":             "ALTER TABLE settings ADD COLUMN banana_key VARCHAR",
             "image_ai_provider":      "ALTER TABLE settings ADD COLUMN image_ai_provider VARCHAR DEFAULT 'banana'",
+            "stencil_image_provider":  "ALTER TABLE settings ADD COLUMN stencil_image_provider VARCHAR DEFAULT 'banana'",
+            "mockup_image_provider":   "ALTER TABLE settings ADD COLUMN mockup_image_provider VARCHAR DEFAULT 'banana'",
+            "stencil_image_quality":   "ALTER TABLE settings ADD COLUMN stencil_image_quality VARCHAR DEFAULT 'auto'",
+            "mockup_image_quality":    "ALTER TABLE settings ADD COLUMN mockup_image_quality VARCHAR DEFAULT 'auto'",
             "text_ai_provider":       "ALTER TABLE settings ADD COLUMN text_ai_provider VARCHAR DEFAULT 'gemini-2.0-flash-lite'",
             "replicate_key":          "ALTER TABLE settings ADD COLUMN replicate_key VARCHAR",
             "openrouter_key":         "ALTER TABLE settings ADD COLUMN openrouter_key VARCHAR",
@@ -69,6 +87,18 @@ try:
             "prompt_image_generation": "ALTER TABLE settings ADD COLUMN prompt_image_generation TEXT",
             "prompt_inpainting":       "ALTER TABLE settings ADD COLUMN prompt_inpainting TEXT",
             "prompt_trend_scraping":   "ALTER TABLE settings ADD COLUMN prompt_trend_scraping TEXT",
+            "prompt_stencil_single":   "ALTER TABLE settings ADD COLUMN prompt_stencil_single TEXT",
+            "prompt_stencil_multiple": "ALTER TABLE settings ADD COLUMN prompt_stencil_multiple TEXT",
+            "prompt_stencil_framed_filigree": "ALTER TABLE settings ADD COLUMN prompt_stencil_framed_filigree TEXT",
+            "prompt_vision_description": "ALTER TABLE settings ADD COLUMN prompt_vision_description TEXT",
+            "prompt_imagen3_negative_suffix": "ALTER TABLE settings ADD COLUMN prompt_imagen3_negative_suffix TEXT",
+            "prompt_legacy_framed_filigree": "ALTER TABLE settings ADD COLUMN prompt_legacy_framed_filigree TEXT",
+            "prompt_legacy_classic":   "ALTER TABLE settings ADD COLUMN prompt_legacy_classic TEXT",
+            "prompt_legacy_image_to_image": "ALTER TABLE settings ADD COLUMN prompt_legacy_image_to_image TEXT",
+            "prompt_legacy_grad_cap":  "ALTER TABLE settings ADD COLUMN prompt_legacy_grad_cap TEXT",
+            "prompt_mockup_banana":    "ALTER TABLE settings ADD COLUMN prompt_mockup_banana TEXT",
+            "prompt_mockup_dalle3":    "ALTER TABLE settings ADD COLUMN prompt_mockup_dalle3 TEXT",
+            "prompt_mockup_degraded":  "ALTER TABLE settings ADD COLUMN prompt_mockup_degraded TEXT",
         }
 
         for col_name, sql in migrations_settings.items():

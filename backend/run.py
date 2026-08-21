@@ -1,3 +1,8 @@
+import os
+for key in list(os.environ.keys()):
+    if os.environ[key] == "None":
+        del os.environ[key]
+
 import uvicorn
 
 if __name__ == "__main__":

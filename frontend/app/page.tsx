@@ -128,8 +128,8 @@ export default function CreationPage() {
   const [steps, setSteps]         = useState<PipelineStep[]>([]);
   const [liveData, setLiveData]   = useState<LiveData>(EMPTY_DATA);
   const stepCounterRef             = useRef(0);
-
   const esRef = useRef<EventSource | null>(null);
+  const isSubmittingRef = useRef(false);
 
   // ── Quality Gate states ───────────────────────────────────────────────────
   const [pipelineStep, setPipelineStep] = useState<"idle" | "stencil_gen" | "quality_gate" | "downstream">("idle");
@@ -153,11 +153,17 @@ export default function CreationPage() {
     setTasks(prev => ({ ...prev, [key]: !prev[key] }));
 
   // ── SSE handler ────────────────────────────────────────────────────────────
+  // Refs to avoid stale closures in onerror callback
+  const doneRef = useRef(false);
+  const errorRef = useRef<string | null>(null);
+
   const connectSSE = useCallback((url: string, isStep1: boolean = false) => {
     esRef.current?.close();
     setStreaming(true);
     setDone(false);
+    doneRef.current = false;
     setError(null);
+    errorRef.current = null;
     setLiveData(EMPTY_DATA);
     setSteps([]);           // Start empty — steps appear dynamically as SSE events fire
     stepCounterRef.current = 0;
@@ -228,7 +234,13 @@ export default function CreationPage() {
 
     es.addEventListener("mockup_ready", (e: MessageEvent) => {
       const d = JSON.parse(e.data);
-      setLiveData(prev => ({ ...prev, mockup_path: d.mockup_path }));
+      setLiveData(prev => ({
+        ...prev,
+        mockup_path: d.mockup_path,
+        mockup_paths: d.mockup_paths,
+        real_mockup_path: d.real_mockup_path,
+        real_mockup_paths: d.real_mockup_paths,
+      }));
     });
 
     es.addEventListener("seo_ready", (e: MessageEvent) => {
@@ -253,32 +265,36 @@ export default function CreationPage() {
         setStreaming(false);
         setPipelineStep("quality_gate");
         setIsRetouchModalOpen(true);
+        doneRef.current = true;
       } else {
         setDone(true);
+        doneRef.current = true;
         setStreaming(false);
         setSteps(prev => prev.map(s => ({ ...s, status: "complete" })));
       }
     });
 
     es.addEventListener("error", (e: MessageEvent) => {
+      let msg = "Erreur inconnue du pipeline.";
       try {
         const d = JSON.parse((e as any).data);
-        setError(d.msg || "Erreur inconnue du pipeline.");
+        msg = d.msg || msg;
+        setError(msg);
       } catch {
         setError("Connexion SSE interrompue.");
       }
       setStreaming(false);
       setActiveStreamUrl(null);
+      errorRef.current = msg;
       es.close();
     });
 
     // Handle EventSource errors with a small delay to avoid false positives
     es.onerror = () => {
-      // Don't immediately show error if we're about to receive data
-      if (!done && !error) {
-        // Give it 2 seconds in case it's a temporary glitch
+      // Use refs to read current values (avoids stale closure)
+      if (!doneRef.current && !errorRef.current) {
         setTimeout(() => {
-          if (!done && !error && esRef.current?.readyState !== EventSource.OPEN) {
+          if (!doneRef.current && !errorRef.current && esRef.current?.readyState !== EventSource.OPEN) {
             setError("Connexion au backend perdue. Vérifiez que le serveur est démarré.");
             setStreaming(false);
             setActiveStreamUrl(null);
@@ -287,7 +303,7 @@ export default function CreationPage() {
         }, 2000);
       }
     };
-  }, [done]);
+  }, []);  // No deps — refs are always current
 
   // ── Backend health check helper ────────────────────────────────────────────
   const checkBackendHealth = async (): Promise<boolean> => {
@@ -302,12 +318,14 @@ export default function CreationPage() {
   // ── Global submit ──────────────────────────────────────────────────────────
   const handleGlobalSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!globalTheme.trim()) return;
+    if (!globalTheme.trim() || isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
     
     // Check backend health first
     const backendUp = await checkBackendHealth();
     if (!backendUp) {
       setError("Impossible de contacter le backend. Vérifiez que le serveur est démarré (python run.py dans le dossier backend/).");
+      isSubmittingRef.current = false;
       return;
     }
     
@@ -340,6 +358,7 @@ export default function CreationPage() {
     } catch (err: any) {
       setError(err.message);
       setStreaming(false);
+      isSubmittingRef.current = false;
       return;
     }
 
@@ -351,13 +370,16 @@ export default function CreationPage() {
       upscale:              true,
       generate_real_mockup: true,
       use_ai_mockup:        true,
+      apply_tp_overlay:     true,
       package:              true,
       generate_seo:         true,
       design_style:         "classic",
       source_type:          "text_prompt",
       output_assembled:     true,
       output_split:         false,
-      strict_fidelity:      true
+      strict_fidelity:      true,
+      n_images:             1,
+      mockup_styles:        ["classic_living_room"]
     });
 
     const params = new URLSearchParams({
@@ -381,10 +403,14 @@ export default function CreationPage() {
 
     setActiveStreamUrl(apiUrl(`/api/pipeline/stream/image?prompt=${encodeURIComponent(globalTheme)}`));
     connectSSE(apiUrl(`/api/pipeline/stream/modular?${params.toString()}&_t=${Date.now()}`), true);
+    isSubmittingRef.current = false;
   };
 
   // ── Modular submit ─────────────────────────────────────────────────────────
   const handleModularSubmit = async (formPayload: any) => {
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
+
     const {
       files: formFiles,
       theme: formTheme,
@@ -410,6 +436,7 @@ export default function CreationPage() {
     if (!backendUp) {
       setError("Impossible de contacter le backend. Vérifiez que le serveur est démarré (python run.py dans le dossier backend/).");
       setStreaming(false);
+      isSubmittingRef.current = false;
       return;
     }
 
@@ -439,6 +466,7 @@ export default function CreationPage() {
     } catch (err: any) {
       setError(err.message);
       setStreaming(false);
+      isSubmittingRef.current = false;
       return;
     }
 
@@ -450,7 +478,7 @@ export default function CreationPage() {
       format_pdf:           formOptions.format_pdf,
       upscale:              formOptions.upscale,
       generate_real_mockup: formOptions.generate_real_mockup,
-      use_ai_mockup:        formOptions.use_ai_mockup,
+      use_ai_mockup:        formOptions.generate_real_mockup,
       apply_tp_overlay:     formOptions.apply_tp_overlay,
       package:              formOptions.package,
       generate_seo:         formOptions.generate_seo,
@@ -460,7 +488,8 @@ export default function CreationPage() {
       output_split:         formOutputSplit,
       strict_fidelity:      formStrictFidelity,
       n_images:             formNImages || 1,
-      mockup_styles:        formPayload.mockupStyles || ["classic_living_room"]
+      mockup_styles:        formPayload.mockupStyles || ["classic_living_room"],
+      apply_binarization:   formOptions.apply_binarization !== false,
     });
 
     // 3. Connect to modular SSE stream for Step 1
@@ -484,13 +513,15 @@ export default function CreationPage() {
       output_split:         String(formOutputSplit),
       strict_fidelity:      String(formStrictFidelity),
       n_images:             String(formNImages || 1),
-      mockup_styles:        JSON.stringify(formPayload.mockupStyles || ["classic_living_room"])
+      mockup_styles:        JSON.stringify(formPayload.mockupStyles || ["classic_living_room"]),
+      apply_binarization:   String(formOptions.apply_binarization !== false)
     });
 
     if (isAiGen) {
       setActiveStreamUrl(apiUrl(`/api/pipeline/stream/image?prompt=${encodeURIComponent(formTheme || "Fichier Importé")}`));
     }
     connectSSE(apiUrl(`/api/pipeline/stream/modular?${params.toString()}&_t=${Date.now()}`), true);
+    isSubmittingRef.current = false;
   };
 
   const resumePipelineAfterValidation = async () => {
@@ -518,7 +549,9 @@ export default function CreationPage() {
       output_assembled:     String(pendingDownstreamParams.output_assembled),
       output_split:         String(pendingDownstreamParams.output_split),
       strict_fidelity:      String(pendingDownstreamParams.strict_fidelity),
-      mockup_styles:        JSON.stringify(pendingDownstreamParams.mockup_styles || ["classic_living_room"])
+      n_images:             String(pendingDownstreamParams.n_images || 1),
+      mockup_styles:        JSON.stringify(pendingDownstreamParams.mockup_styles || ["classic_living_room"]),
+      apply_binarization:   String(pendingDownstreamParams.apply_binarization !== false)
     });
 
     connectSSE(apiUrl(`/api/pipeline/stream/modular?${params.toString()}&_t=${Date.now()}`), false);

@@ -31,6 +31,30 @@ export const CanvasEditor = forwardRef(function CanvasEditor(
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
 
+  // Memory leak protection: track object URLs & dispose canvas contexts on unmount
+  const createdUrlsRef = useRef<string[]>([]);
+
+  useEffect(() => {
+    return () => {
+      // 1. Revoke all temporary object URLs
+      createdUrlsRef.current.forEach((url) => {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          // ignore
+        }
+      });
+      createdUrlsRef.current = [];
+
+      // 2. Clear canvas data to free GPU/RAM buffers
+      try {
+        canvasRef.current?.clearCanvas();
+      } catch {
+        // ignore
+      }
+    };
+  }, []);
+
   // Clear canvas overlay when imageUrl changes
   useEffect(() => {
     canvasRef.current?.clearCanvas();

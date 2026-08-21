@@ -15,7 +15,10 @@ from typing import List, Optional, Any
 from PIL import Image
 
 import requests
-from google import genai
+try:
+    from google import genai
+except ImportError:
+    genai = None
 from openai import OpenAI
 
 
@@ -65,63 +68,87 @@ def legacy_generate_stencil_image(provider: str, banana_key: str, openai_key: st
     Optionally uses an init_image_path to base the generation on an existing image.
     If custom_prompt is provided, it overrides the default stencil prompt.
     """
-    if not provider or provider not in ["dall-e-3", "imagen-3", "banana", "openai", "gemini", "google"]:
+    if not provider or (provider not in ["imagen-3", "banana", "openai", "gemini", "google"] and not provider.startswith("gpt-image")):
         if openai_key:
-            provider = "dall-e-3"
+            provider = "gpt-image-1-mini"
         elif banana_key:
             provider = "banana"
         else:
-            provider = "dall-e-3"
+            provider = "gpt-image-1-mini"
 
     if provider == "openai":
-        provider = "dall-e-3"
+        provider = "gpt-image-1-mini"
     elif provider in ("gemini", "google"):
         provider = "imagen-3"
+
+    legacy_framed_filigree = (
+        "Generate a strictly square image (1024x1024 resolution). An intricate, highly detailed, flat vector-style layered stencil silhouette art containing exactly {bundle_size} design(s) of '{theme}'. \n\n"
+        "Strict Technical Constraints:\n"
+        "- STRUCTURAL RING: The design MUST be entirely enclosed within a solid black circular outer frame ring acting as the primary structural support.\n"
+        "- Solid black lines (#000000) on a pure white background (#FFFFFF) only. No gray, shadows, or gradients.\n"
+        "- COMPLEX FILIGREE: Incorporate rich, elegant internal filigree and interlacing motifs.\n"
+        "- ABSOLUTE STRUCTURAL INTEGRITY: Every internal element MUST be physically fused to neighboring lines or directly connected to the circular outer frame ring using clean, thick bridging joints. Zero floating islands. Optimized for flawless CNC routing."
+    )
+    legacy_classic = (
+        "Generate a strictly square image (1024x1024 resolution). A crisp, perfect, flat vector-style silhouette bundle collection containing exactly {bundle_size} separate designs of '{theme}'. \n\n"
+        "Strict Technical Constraints:\n"
+        "- Solid black shapes and lines on a solid stark white background only. Pure black (#000000) on pure white (#FFFFFF).\n"
+        "- CRITICAL STRUCTURAL CONSTRAINT: Every single black shape and element within each design MUST be physically connected to its main body to prevent floating islands. Must hold together as one connected piece for laser cutting.\n"
+        "- Thick, clear, bold lines. NO gradients, shadows, grey pixels, sketchy lines, or text."
+    )
+    legacy_image_to_image = (
+        "\n\nIMAGE-TO-IMAGE INSTRUCTIONS:\n"
+        "- Treat the attached reference image strictly as a structural skeleton or shape template.\n"
+        "- Output a flat 2D graphic only. Absolutely NO 3D effects, NO bevels, NO shadows, NO color gradients, and NO gray pixels. Every pixel must be either pure black #000000 or pure white #FFFFFF."
+    )
+    legacy_grad_cap = " Replicate the silhouette of a classic graduation cap / mortarboard from the reference, flattening it into a pure solid black silhouette shape on a stark white background."
+
+    try:
+        from ..database import SessionLocal
+        from ..models import Setting
+        db_s = SessionLocal()
+        s = db_s.query(Setting).first()
+        if s:
+            if s.prompt_legacy_framed_filigree and s.prompt_legacy_framed_filigree.strip():
+                legacy_framed_filigree = s.prompt_legacy_framed_filigree
+            if s.prompt_legacy_classic and s.prompt_legacy_classic.strip():
+                legacy_classic = s.prompt_legacy_classic
+            if s.prompt_legacy_image_to_image and s.prompt_legacy_image_to_image.strip():
+                legacy_image_to_image = s.prompt_legacy_image_to_image
+            if s.prompt_legacy_grad_cap and s.prompt_legacy_grad_cap.strip():
+                legacy_grad_cap = s.prompt_legacy_grad_cap
+        db_s.close()
+    except Exception:
+        pass
 
     try:
         if custom_prompt:
             strict_prompt = custom_prompt
         else:
             if design_style == "framed_filigree":
-                strict_prompt = (
-                    f"Generate a strictly square image (1024x1024 resolution). An intricate, highly detailed, flat vector-style layered stencil silhouette art containing exactly {bundle_size} design(s) of '{theme}'. \n\n"
-                    "Strict Technical Constraints:\n"
-                    "- STRUCTURAL RING: The design MUST be entirely enclosed within a solid black circular outer frame ring acting as the primary structural support.\n"
-                    "- Solid black lines (#000000) on a pure white background (#FFFFFF) only. No gray, shadows, or gradients.\n"
-                    "- COMPLEX FILIGREE: Incorporate rich, elegant internal filigree and interlacing motifs.\n"
-                    "- ABSOLUTE STRUCTURAL INTEGRITY: Every internal element MUST be physically fused to neighboring lines or directly connected to the circular outer frame ring using clean, thick bridging joints. Zero floating islands. Optimized for flawless CNC routing."
-                )
+                strict_prompt = legacy_framed_filigree.replace("{bundle_size}", str(bundle_size)).replace("{theme}", theme)
             else:
-                strict_prompt = (
-                    f"Generate a strictly square image (1024x1024 resolution). A crisp, perfect, flat vector-style silhouette bundle collection containing exactly {bundle_size} separate designs of '{theme}'. \n\n"
-                    "Strict Technical Constraints:\n"
-                    "- Solid black shapes and lines on a solid stark white background only. Pure black (#000000) on pure white (#FFFFFF).\n"
-                    "- CRITICAL STRUCTURAL CONSTRAINT: Every single black shape and element within each design MUST be physically connected to its main body to prevent floating islands. Must hold together as one connected piece for laser cutting.\n"
-                    "- Thick, clear, bold lines. NO gradients, shadows, grey pixels, sketchy lines, or text."
-                )
+                strict_prompt = legacy_classic.replace("{bundle_size}", str(bundle_size)).replace("{theme}", theme)
 
-        if provider == "dall-e-3":
+        if provider.startswith("gpt-image") or provider == "dall-e-3":
             if not openai_key:
-                raise ValueError("Clé API OpenAI manquante pour DALL-E 3. Configurez-la dans les paramètres.")
+                raise ValueError("Clé API OpenAI manquante. Configurez-la dans les paramètres.")
             client = OpenAI(
                 api_key=openai_key,
                 base_url="https://api.openai.com/v1"
             )
             
             if init_image_path and os.path.exists(init_image_path):
-                strict_prompt += (
-                    "\n\nIMAGE-TO-IMAGE INSTRUCTIONS:\n"
-                    "- Treat the attached reference image strictly as a structural skeleton or shape template.\n"
-                    "- Output a flat 2D graphic only. Absolutely NO 3D effects, NO bevels, NO shadows, NO color gradients, and NO gray pixels. Every pixel must be either pure black #000000 or pure white #FFFFFF."
-                )
-                strict_prompt += " Replicate the silhouette of a classic graduation cap / mortarboard from the reference, flattening it into a pure solid black silhouette shape on a stark white background."
+                strict_prompt += legacy_image_to_image
+                strict_prompt += legacy_grad_cap
 
+            model_name = provider if provider.startswith("gpt-image") else "gpt-image-1-mini"
             response = client.images.generate(
-                model="gpt-image-2",
+                model=model_name,
                 prompt=strict_prompt,
                 n=1,
                 size="1024x1024",
-                quality="auto"
+                quality="low"
             )
             img_item = response.data[0]
             if img_item.b64_json:
@@ -444,32 +471,34 @@ def generate_ai_mockup(provider: str, banana_key: str, openai_key: str, stencil_
     temp_bg = tempfile.mktemp(suffix=".jpg")
     bg_generated = False
     
-    if not provider or provider not in ["dall-e-3", "imagen-3", "banana", "openai", "gemini", "google"]:
+    if not provider or (provider not in ["imagen-3", "banana", "openai", "gemini", "google"] and not provider.startswith("gpt-image")):
         if openai_key:
-            provider = "dall-e-3"
+            provider = "gpt-image-1-mini"
         elif banana_key:
             provider = "imagen-3"
         else:
-            provider = "dall-e-3"
+            provider = "gpt-image-1-mini"
 
     if provider == "openai":
-        provider = "dall-e-3"
+        provider = "gpt-image-1-mini"
     elif provider in ("gemini", "google"):
         provider = "imagen-3"
     
     try:
-        if provider == "dall-e-3":
+        if provider.startswith("gpt-image") or provider == "dall-e-3":
             if not openai_key:
-                raise ValueError("Clé API OpenAI manquante pour DALL-E 3.")
+                raise ValueError("Clé API OpenAI manquante.")
             client = OpenAI(
                 api_key=openai_key,
                 base_url="https://api.openai.com/v1"
             )
+            model_name = provider if provider.startswith("gpt-image") else "gpt-image-1-mini"
             response = client.images.generate(
-                model="gpt-image-1",
+                model=model_name,
                 prompt=bg_prompt,
                 n=1,
-                size="1024x1024"
+                size="1024x1024",
+                quality="low"
             )
             img_item = response.data[0]
             if img_item.b64_json:
@@ -963,6 +992,8 @@ def generate_seo_metadata(settings, theme: str) -> dict:
         "wood laser", "laser engrave", label.lower()[:19],
     ]
 
+    seo_instruction = (settings.prompt_seo.strip() if (settings and settings.prompt_seo and settings.prompt_seo.strip()) else SEO_SYSTEM_PROMPT).strip()
+
     last_error = None
     for attempt in range(1, 3):
         try:
@@ -970,7 +1001,7 @@ def generate_seo_metadata(settings, theme: str) -> dict:
                 model=provider,
                 contents=user_message,
                 config=genai.types.GenerateContentConfig(
-                    system_instruction=SEO_SYSTEM_PROMPT,
+                    system_instruction=seo_instruction,
                     response_mime_type="application/json",
                     temperature=0.7,
                     max_output_tokens=8192,

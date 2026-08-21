@@ -1,5 +1,6 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Text
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Text, ForeignKey
+from sqlalchemy.orm import relationship
 from .database import Base
 
 class Setting(Base):
@@ -17,6 +18,10 @@ class Setting(Base):
     stability_key = Column(String, nullable=True)
 
     image_ai_provider = Column(String, default="banana")
+    stencil_image_provider = Column(String, default="banana")
+    mockup_image_provider = Column(String, default="banana")
+    stencil_image_quality = Column(String, default="auto")
+    mockup_image_quality = Column(String, default="auto")
     text_ai_provider = Column(String, default="gemini-2.0-flash-lite")
     etsy_client_id = Column(String, nullable=True)
     etsy_client_secret = Column(String, nullable=True)
@@ -27,11 +32,27 @@ class Setting(Base):
     potrace_path = Column(String, default="potrace")
     inkscape_path = Column(String, default="inkscape")
     mockup_background_path = Column(String, nullable=True)
+    watermark_text = Column(String, default="digitalfilesbymop")
+    default_apply_watermark = Column(Boolean, default=False)
+    mockup_pack_count = Column(Integer, default=4)
 
     prompt_seo = Column(Text, nullable=True)
     prompt_image_generation = Column(Text, nullable=True)
     prompt_inpainting = Column(Text, nullable=True)
     prompt_trend_scraping = Column(Text, nullable=True)
+
+    prompt_stencil_single = Column(Text, nullable=True)
+    prompt_stencil_multiple = Column(Text, nullable=True)
+    prompt_stencil_framed_filigree = Column(Text, nullable=True)
+    prompt_vision_description = Column(Text, nullable=True)
+    prompt_imagen3_negative_suffix = Column(Text, nullable=True)
+    prompt_legacy_framed_filigree = Column(Text, nullable=True)
+    prompt_legacy_classic = Column(Text, nullable=True)
+    prompt_legacy_image_to_image = Column(Text, nullable=True)
+    prompt_legacy_grad_cap = Column(Text, nullable=True)
+    prompt_mockup_banana = Column(Text, nullable=True)
+    prompt_mockup_dalle3 = Column(Text, nullable=True)
+    prompt_mockup_degraded = Column(Text, nullable=True)
 
 
 class Creation(Base):
@@ -132,6 +153,84 @@ class Creation(Base):
         else:
             self.selected_images_raw = value
 
+    @property
+    def mockup_paths(self):
+        if not self.mockup_paths_raw:
+            return []
+        return [p.strip() for p in self.mockup_paths_raw.split(",") if p.strip()]
+
+    @mockup_paths.setter
+    def mockup_paths(self, value):
+        if isinstance(value, list):
+            self.mockup_paths_raw = ",".join(value)
+        else:
+            self.mockup_paths_raw = value
+
+    @property
+    def real_mockup_paths(self):
+        if not self.real_mockup_paths_raw:
+            return []
+        return [p.strip() for p in self.real_mockup_paths_raw.split(",") if p.strip()]
+
+    @real_mockup_paths.setter
+    def real_mockup_paths(self, value):
+        if isinstance(value, list):
+            self.real_mockup_paths_raw = ",".join(value)
+        else:
+            self.real_mockup_paths_raw = value
+
+    @property
+    def commercial_mockup_paths(self):
+        if not self.commercial_mockup_paths_raw:
+            return []
+        return [p.strip() for p in self.commercial_mockup_paths_raw.split(",") if p.strip()]
+
+    @commercial_mockup_paths.setter
+    def commercial_mockup_paths(self, value):
+        if isinstance(value, list):
+            self.commercial_mockup_paths_raw = ",".join(value)
+        else:
+            self.commercial_mockup_paths_raw = value
+
+    @property
+    def dxf_paths(self):
+        if not self.dxf_paths_raw:
+            return []
+        return [p.strip() for p in self.dxf_paths_raw.split(",") if p.strip()]
+
+    @dxf_paths.setter
+    def dxf_paths(self, value):
+        if isinstance(value, list):
+            self.dxf_paths_raw = ",".join(value)
+        else:
+            self.dxf_paths_raw = value
+
+    @property
+    def ai_paths(self):
+        if not self.ai_paths_raw:
+            return []
+        return [p.strip() for p in self.ai_paths_raw.split(",") if p.strip()]
+
+    @ai_paths.setter
+    def ai_paths(self, value):
+        if isinstance(value, list):
+            self.ai_paths_raw = ",".join(value)
+        else:
+            self.ai_paths_raw = value
+
+    @property
+    def eps_paths(self):
+        if not self.eps_paths_raw:
+            return []
+        return [p.strip() for p in self.eps_paths_raw.split(",") if p.strip()]
+
+    @eps_paths.setter
+    def eps_paths(self, value):
+        if isinstance(value, list):
+            self.eps_paths_raw = ",".join(value)
+        else:
+            self.eps_paths_raw = value
+
     # ── Etsy ────────────────────────────────────────────────────────────────
     is_published_etsy = Column(Boolean, default=False)
     etsy_listing_id = Column(String, nullable=True)
@@ -150,7 +249,33 @@ class Creation(Base):
     compliance_warnings = Column(Text, nullable=True)         # JSON list des warnings [NEW]
     pipeline_status = Column(Text, nullable=True)             # JSON status of each component [NEW]
     selected_images_raw = Column(Text, nullable=True)         # Comma-separated selected image paths [NEW]
+    mockup_styles = Column(Text, nullable=True)                # JSON array des styles mockup sélectionnés [NEW]
+    apply_watermark = Column(Boolean, default=False)
+    mockup_paths_raw = Column(Text, nullable=True)
+    real_mockup_paths_raw = Column(Text, nullable=True)
+    commercial_mockup_paths_raw = Column(Text, nullable=True)
+    dxf_paths_raw = Column(Text, nullable=True)
+    ai_paths_raw = Column(Text, nullable=True)
+    eps_paths_raw = Column(Text, nullable=True)
 
+    # ── Relation normalisée CreationAsset ───────────────────────────────────
+    assets = relationship("CreationAsset", back_populates="creation", cascade="all, delete-orphan", lazy="selectin")
+
+
+class CreationAsset(Base):
+    """Table relationnelle normalisée pour tous les fichiers et médias générés."""
+    __tablename__ = "creation_assets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    creation_id = Column(Integer, ForeignKey("creations.id", ondelete="CASCADE"), index=True, nullable=False)
+    asset_type = Column(String, index=True, nullable=False)  # "source_png", "svg", "dxf", "ai", "eps", "pdf", "mockup", "zip", "variant"
+    file_path = Column(String, nullable=False)
+    filename = Column(String, nullable=True)
+    file_size = Column(Integer, nullable=True)
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    creation = relationship("Creation", back_populates="assets")
 
 
 class IdeaBank(Base):

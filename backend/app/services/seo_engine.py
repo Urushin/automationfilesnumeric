@@ -122,7 +122,7 @@ def _ascii_tag(value: str) -> str:
     value = value.encode("ascii", "ignore").decode("ascii")
     value = re.sub(r"[^a-zA-Z0-9 ]+", " ", value).lower()
     value = re.sub(r"\s+", " ", value).strip()
-    if len(value) >= 20:
+    if len(value) > 20:
         return ""
     return value
 

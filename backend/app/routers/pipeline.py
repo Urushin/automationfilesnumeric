@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from ..database import get_db, SessionLocal
-from ..models import Creation
+from ..models import Creation, CreationAsset, Setting
 from ..schemas import CreationResponse
 from ..routers.settings import get_or_create_settings
 from ..services.image_engine import (
@@ -34,13 +34,21 @@ from ..services.image_engine import (
 )
 from ..services.seo_engine import generate_etsy_seo
 from ..services.generator import generate_seo_metadata
-from ..services.vector import png_to_svg, svg_to_dxf
+from ..services.vector import png_to_svg, svg_to_dxf, svg_to_pdf
 from ..services.image import convert_to_transparent_png, package_assets, png_to_pdf
 from ..services.mockup_processor import create_ecommerce_mockup
 from ..services.export_formats import svg_to_ai, svg_to_eps, svg_to_high_quality_png
 from ..services.svg_analyzer import analyze_svg_connectivity
-from ..services.compliance import run_compliance_check
-from ..services.mockup_engine import composite_stencil_on_bg, create_real_mockup
+from ..services.mockup_engine import (
+    composite_stencil_on_bg,
+    create_real_mockup,
+    generate_etsy_standard_mockup_pack,
+    create_real_layer_compositing,
+    generate_formats_infographic,
+    generate_specs_dimensions_infographic,
+    generate_zoom_texture_mockup,
+    apply_watermark_to_image,
+)
 
 router = APIRouter(prefix="/api/pipeline", tags=["Pipeline SSE"])
 
@@ -48,6 +56,20 @@ STORAGE_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "../../storage")
 )
 os.makedirs(STORAGE_DIR, exist_ok=True)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CENTRALIZED MOCKUP STYLE PROMPTS (single source of truth)
+# ─────────────────────────────────────────────────────────────────────────────
+MOCKUP_STYLE_PROMPTS = {
+    "classic_living_room": "A professional product photography of a modern luxury living room, elegant sofa, warm ambient light, with a large blank concrete wall in the center.",
+    "modern_bedroom": "A professional product photography of a minimalist Scandinavian bedroom, cozy linen bedding, warm wooden side table, with a large blank plaster wall in the center.",
+    "industrial_loft": "A professional product photography of a spacious industrial loft, brick wall, steel accents, large windows, with a large blank dark brick wall in the center.",
+    "scandinavian_office": "A professional product photography of a Scandinavian design home office, minimalist light wood desk, plants, with a large blank white wall in the center.",
+    "boho_chic": "A professional product photography of a cozy bohemian living room, rattan furniture, warm textiles, pampas grass, with a large blank beige wall in the center.",
+    "industrial": "A professional product photography of a modern industrial room, concrete walls, dark metal accents, warm spotlighting, with a large flat empty concrete wall in the center.",
+    "luxury_wood": "A professional product photography of a luxury room interior, premium warm rustic oak wooden panels on the wall, elegant high-end styling, with a large flat empty wooden wall in the center.",
+    "modern_plaster": "A professional product photography of a minimalist modern room, high-end matte plaster textured wall, soft natural side lighting, with a large flat empty plaster wall in the center."
+}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -61,6 +83,27 @@ def _status(step: int, text: str, status: str = "active") -> str:
     return _sse("status", {"step": step, "text": text, "status": status})
 
 
+def _sync_creation_assets(db: Session, creation_id: int, asset_type: str, paths: list):
+    try:
+        db.query(CreationAsset).filter(
+            CreationAsset.creation_id == creation_id,
+            CreationAsset.asset_type == asset_type
+        ).delete()
+        for idx, p in enumerate(paths):
+            if not p:
+                continue
+            asset = CreationAsset(
+                creation_id=creation_id,
+                asset_type=asset_type,
+                file_path=p,
+                filename=os.path.basename(p),
+                sort_order=idx
+            )
+            db.add(asset)
+    except Exception as e:
+        print(f"[assets_sync] Warning: failed to sync {asset_type} assets: {e}")
+
+
 def _update_creation(creation_id: int, **fields):
     db = SessionLocal()
     try:
@@ -69,17 +112,43 @@ def _update_creation(creation_id: int, **fields):
             for k, v in fields.items():
                 if k == "png_paths" and isinstance(v, list):
                     creation.png_paths = v
+                    _sync_creation_assets(db, creation_id, "png", v)
                 elif k == "svg_paths" and isinstance(v, list):
                     creation.svg_paths = v
+                    _sync_creation_assets(db, creation_id, "svg", v)
                 elif k == "pdf_paths" and isinstance(v, list):
                     creation.pdf_paths = v
+                    _sync_creation_assets(db, creation_id, "pdf", v)
+                elif k == "mockup_paths" and isinstance(v, list):
+                    creation.mockup_paths = v
+                    _sync_creation_assets(db, creation_id, "mockup", v)
+                elif k == "real_mockup_paths" and isinstance(v, list):
+                    creation.real_mockup_paths = v
+                    _sync_creation_assets(db, creation_id, "real_mockup", v)
+                elif k == "dxf_paths" and isinstance(v, list):
+                    creation.dxf_paths = v
+                    _sync_creation_assets(db, creation_id, "dxf", v)
+                elif k == "ai_paths" and isinstance(v, list):
+                    creation.ai_paths = v
+                    _sync_creation_assets(db, creation_id, "ai", v)
+                elif k == "eps_paths" and isinstance(v, list):
+                    creation.eps_paths = v
+                    _sync_creation_assets(db, creation_id, "eps", v)
                 elif k == "source_png_variants" and isinstance(v, list):
                     creation.source_png_variants = v
+                    _sync_creation_assets(db, creation_id, "variant", v)
+                elif k == "zip_path" and isinstance(v, str) and v:
+                    creation.zip_path = v
+                    _sync_creation_assets(db, creation_id, "zip", [v])
+                elif k == "source_png_path" and isinstance(v, str) and v:
+                    creation.source_png_path = v
+                    _sync_creation_assets(db, creation_id, "source_png", [v])
                 else:
                     setattr(creation, k, v)
             db.commit()
     finally:
         db.close()
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -131,6 +200,10 @@ async def _global_pipeline_generator(
             "anthropic_key": getattr(settings, "anthropic_key", None),
             "stability_key": getattr(settings, "stability_key", None),
             "image_ai_provider": preferred_image_provider or getattr(settings, "image_ai_provider", "banana") or "banana",
+            "stencil_image_provider": preferred_image_provider or getattr(settings, "stencil_image_provider", None) or getattr(settings, "image_ai_provider", "banana") or "banana",
+            "mockup_image_provider": getattr(settings, "mockup_image_provider", None) or getattr(settings, "image_ai_provider", "banana") or "banana",
+            "stencil_image_quality": getattr(settings, "stencil_image_quality", "auto") or "auto",
+            "mockup_image_quality": getattr(settings, "mockup_image_quality", "auto") or "auto",
             "text_ai_provider":  preferred_text_provider or getattr(settings, "text_ai_provider", "gemini-2.0-flash-lite") or "gemini-2.0-flash-lite",
             "potrace_path": getattr(settings, "potrace_path", "potrace"),
             "inkscape_path":getattr(settings, "inkscape_path", "inkscape"),
@@ -174,12 +247,13 @@ async def _global_pipeline_generator(
 
     try:
         # ── STEP 1: Image AI Generation ────────────────────────────────────
-        yield _status(1, f"Génération du motif IA ({settings_snap.get('image_ai_provider', 'banana')})...")
+        stencil_provider = settings_snap.get('stencil_image_provider') or settings_snap.get('image_ai_provider', 'banana')
+        yield _status(1, f"Génération du motif IA ({stencil_provider})...")
         _update_creation(cid, current_step="Génération d'Image...")
         try:
             result = await asyncio.to_thread(
                 generate_stencil_image,
-                provider=settings_snap.get("image_ai_provider", "banana"),
+                provider=stencil_provider,
                 banana_key=settings_snap.get("banana_key"),
                 openai_key=settings_snap.get("openai_key"),
                 theme=theme,
@@ -192,7 +266,10 @@ async def _global_pipeline_generator(
                 openrouter_key=settings_snap.get("openrouter_key"),
                 huggingface_key=settings_snap.get("huggingface_key"),
                 stability_key=settings_snap.get("stability_key"),
-                n_images=1
+                n_images=1,
+                quality=settings_snap.get("stencil_image_quality", "auto"),
+                mockup_provider=settings_snap.get("mockup_image_provider"),
+                mockup_quality=settings_snap.get("mockup_image_quality", "auto")
             )
             comp_status["stencil"]["paths"] = [f"/static/creation_{cid}/{os.path.basename(source_png)}"]
             stencil_prompt = result.get("prompt", "") if isinstance(result, dict) else ""
@@ -296,7 +373,7 @@ async def _global_pipeline_generator(
         svg_urls = []
         for el in elements:
             if os.path.exists(el["source_png"]):
-                await asyncio.to_thread(png_to_svg, settings_snap["potrace_path"], el["source_png"], el["svg_path"])
+                await asyncio.to_thread(png_to_svg, settings_snap["potrace_path"], el["source_png"], el["svg_path"], settings_snap["inkscape_path"])
                 if os.path.exists(el["svg_path"]):
                     svg_urls.append(f"/static/creation_{cid}/{os.path.basename(el['svg_path'])}")
 
@@ -346,13 +423,19 @@ async def _global_pipeline_generator(
         _update_creation(
             cid,
             dxf_path=dxf_urls[0] if dxf_urls else None,
+            dxf_paths=dxf_urls,
             ai_path=ai_urls[0] if ai_urls else None,
+            ai_paths=ai_urls,
             eps_path=eps_urls[0] if eps_urls else None,
+            eps_paths=eps_urls,
         )
         yield _sse("assets_ready", {
             "dxf_path": dxf_urls[0] if dxf_urls else None,
+            "dxf_paths": dxf_urls,
             "ai_path":  ai_urls[0] if ai_urls else None,
+            "ai_paths": ai_urls,
             "eps_path": eps_urls[0] if eps_urls else None,
+            "eps_paths": eps_urls,
         })
 
         # ── STEP 6: PDF ──────────────────────────────
@@ -361,35 +444,75 @@ async def _global_pipeline_generator(
         pdf_urls = []
         for el in elements:
             png_src = el["upscale_png"] if os.path.exists(el["upscale_png"]) else el["source_png"]
-            if os.path.exists(png_src):
-                await asyncio.to_thread(png_to_pdf, png_src, el["pdf_path"])
+            if os.path.exists(el["svg_path"]):
+                await asyncio.to_thread(svg_to_pdf, settings_snap["inkscape_path"], el["svg_path"], el["pdf_path"], png_src)
                 if os.path.exists(el["pdf_path"]):
                     pdf_urls.append(f"/static/creation_{cid}/{os.path.basename(el['pdf_path'])}")
 
         _update_creation(cid, pdf_path=pdf_urls[0] if pdf_urls else None, pdf_paths=pdf_urls)
         yield _sse("assets_ready", {"pdf_path": pdf_urls[0] if pdf_urls else None, "pdf_paths": pdf_urls})
 
-        # ── STEP 7: Mockup ──────────────────────────────────
-        yield _status(7, "Création du mockup e-commerce...")
-        _update_creation(cid, current_step="Création Mockup...")
+        # ── STEP 7: Pack 4 Visuels Etsy (Placage Réel & Zéro Hallucination) ───
+        yield _status(7, "Création du pack de 4 visuels Etsy (Mockup, Zoom, Formats, Guide)...")
+        _update_creation(cid, current_step="Création du pack Etsy (4 visuels)...")
         try:
             png_for_mockup = upscale_png if os.path.exists(upscale_png) else binarized_png
-            await asyncio.to_thread(create_ecommerce_mockup, png_for_mockup, mockup_path)
+
+            db = SessionLocal()
+            try:
+                creation = db.query(Creation).filter(Creation.id == cid).first()
+                mockup_styles_raw = creation.mockup_styles if creation else None
+                settings_obj = db.query(Setting).first()
+                watermark_text = getattr(settings_obj, "watermark_text", "digitalfilesbymop") or "digitalfilesbymop"
+                apply_wm = getattr(creation, "apply_watermark", False) or getattr(settings_obj, "default_apply_watermark", False)
+            finally:
+                db.close()
+
+            parsed_styles = []
+            if mockup_styles_raw:
+                try:
+                    parsed_styles = json.loads(mockup_styles_raw)
+                except Exception:
+                    parsed_styles = [x.strip() for x in mockup_styles_raw.split(",") if x.strip()]
+            selected_style = parsed_styles[0] if parsed_styles else "classic_living_room"
+
+            pack_result = await asyncio.to_thread(
+                generate_etsy_standard_mockup_pack,
+                stencil_path=png_for_mockup,
+                output_dir=creation_dir,
+                theme=theme,
+                bundle_size=bundle_size,
+                bg_style=selected_style,
+                apply_watermark=apply_wm,
+                watermark_text=watermark_text
+            )
+
+            mockup_raw_paths = [f"/static/creation_{cid}/{os.path.basename(p)}" for p in pack_result["all_paths"]]
+            first_raw_path = mockup_raw_paths[0] if mockup_raw_paths else None
+
             _update_creation(
                 cid,
-                mockup_path=f"/static/creation_{cid}/{os.path.basename(mockup_path)}" if os.path.exists(mockup_path) else None,
-                current_step="Mockup généré ✓",
+                mockup_path=first_raw_path,
+                mockup_paths=mockup_raw_paths,
+                real_mockup_path=None,
+                real_mockup_paths=[],
+                current_step="Pack Etsy (4 visuels) généré ✓",
                 pipeline_status=json.dumps(comp_status)
             )
-            if os.path.exists(mockup_path):
+            if first_raw_path:
                 yield _sse("mockup_ready", {
-                    "mockup_path": f"/static/creation_{cid}/{os.path.basename(mockup_path)}"
+                    "mockup_path": first_raw_path,
+                    "mockup_paths": mockup_raw_paths,
+                    "real_mockup_path": None,
+                    "real_mockup_paths": [],
+                    "commercial_mockup_paths": []
                 })
         except Exception as me:
             print(f"[pipeline] Mockup generation failed: {me}")
             comp_status["mockup"]["status"] = "failed"
             comp_status["mockup"]["error"] = str(me)
             _update_creation(cid, current_step="Mockup failed, proceeding...", pipeline_status=json.dumps(comp_status))
+
 
         # ── STEP 8: ZIP ──────────────────────────────────
         yield _status(8, "Création de l'archive ZIP...")
@@ -400,8 +523,10 @@ async def _global_pipeline_generator(
                 p = el[path_key]
                 if p and os.path.exists(p):
                     assets_to_zip.append(p)
-        if os.path.exists(mockup_path):
-            assets_to_zip.append(mockup_path)
+        for raw_p in mockup_raw_paths:
+            full_raw_p = os.path.join(creation_dir, os.path.basename(raw_p))
+            if os.path.exists(full_raw_p):
+                assets_to_zip.append(full_raw_p)
 
         if assets_to_zip:
             await asyncio.to_thread(package_assets, assets_to_zip, zip_path)
@@ -591,6 +716,11 @@ def reprocess_creation_assets(creation_id: int):
             "huggingface_key": getattr(settings, "huggingface_key", None),
             "potrace_path": getattr(settings, "potrace_path", "potrace"),
             "inkscape_path":getattr(settings, "inkscape_path", "inkscape"),
+            "image_ai_provider": getattr(settings, "image_ai_provider", "banana") or "banana",
+            "stencil_image_provider": getattr(settings, "stencil_image_provider", None) or getattr(settings, "image_ai_provider", "banana") or "banana",
+            "mockup_image_provider": getattr(settings, "mockup_image_provider", None) or getattr(settings, "image_ai_provider", "banana") or "banana",
+            "stencil_image_quality": getattr(settings, "stencil_image_quality", "auto") or "auto",
+            "mockup_image_quality": getattr(settings, "mockup_image_quality", "auto") or "auto",
             "text_ai_provider":  getattr(settings, "text_ai_provider", "gemini-2.0-flash-lite") or "gemini-2.0-flash-lite",
             "prompt_image_generation": getattr(settings, "prompt_image_generation", None),
         }
@@ -646,7 +776,7 @@ def reprocess_creation_assets(creation_id: int):
                     png_urls.append(f"/static/creation_{creation_id}/{os.path.basename(el['upscale_png'])}")
                 
                 # potrace vectorisation
-                png_to_svg(settings_snap["potrace_path"], el["source_png"], el["svg_path"])
+                png_to_svg(settings_snap["potrace_path"], el["source_png"], el["svg_path"], inkscape_bin)
                 if os.path.exists(el["svg_path"]):
                     svg_urls.append(f"/static/creation_{creation_id}/{os.path.basename(el['svg_path'])}")
                     # CAD conversion
@@ -661,7 +791,8 @@ def reprocess_creation_assets(creation_id: int):
                         eps_urls.append(f"/static/creation_{creation_id}/{os.path.basename(el['eps_path'])}")
                     
                     # PDF conversion
-                    png_to_pdf(el["upscale_png"] if os.path.exists(el["upscale_png"]) else el["source_png"], el["pdf_path"])
+                    if os.path.exists(el["svg_path"]):
+                        svg_to_pdf(inkscape_bin, el["svg_path"], el["pdf_path"], el["upscale_png"] if os.path.exists(el["upscale_png"]) else el["source_png"])
                     if os.path.exists(el["pdf_path"]):
                         pdf_urls.append(f"/static/creation_{creation_id}/{os.path.basename(el['pdf_path'])}")
 
@@ -671,28 +802,22 @@ def reprocess_creation_assets(creation_id: int):
             convert_to_transparent_png(binarized_png, master_upscale, 3)
         png_for_mockup = master_upscale if os.path.exists(master_upscale) else binarized_png
         
-        # Load styles from mockup_styles.json
-        styles_file = os.path.join(creation_dir, "mockup_styles.json")
+        # Load styles from DB column (preferred) or fallback to mockup_styles.json
         parsed_styles = ["classic_living_room"]
-        if os.path.exists(styles_file):
+        if creation.mockup_styles:
             try:
-                import json
-                with open(styles_file, "r", encoding="utf-8") as f_styles:
-                    styles_data = json.load(f_styles)
-                    parsed_styles = styles_data.get("styles", ["classic_living_room"])
+                parsed_styles = json.loads(creation.mockup_styles)
             except Exception:
-                pass
-
-        MOCKUP_STYLE_PROMPTS = {
-            "classic_living_room": "A professional product photography of a modern luxury living room, elegant sofa, warm ambient light, with a large blank concrete wall in the center.",
-            "modern_bedroom": "A professional product photography of a minimalist Scandinavian bedroom, cozy linen bedding, warm wooden side table, with a large blank plaster wall in the center.",
-            "industrial_loft": "A professional product photography of a spacious industrial loft, brick wall, steel accents, large windows, with a large blank dark brick wall in the center.",
-            "scandinavian_office": "A professional product photography of a Scandinavian design home office, minimalist light wood desk, plants, with a large blank white wall in the center.",
-            "boho_chic": "A professional product photography of a cozy bohemian living room, rattan furniture, warm textiles, pampas grass, with a large blank beige wall in the center.",
-            "industrial": "A professional product photography of a modern industrial room, concrete walls, dark metal accents, warm spotlighting, with a large flat empty concrete wall in the center.",
-            "luxury_wood": "A professional product photography of a luxury room interior, premium warm rustic oak wooden panels on the wall, elegant high-end styling, with a large flat empty wooden wall in the center.",
-            "modern_plaster": "A professional product photography of a minimalist modern room, high-end matte plaster textured wall, soft natural side lighting, with a large flat empty plaster wall in the center."
-        }
+                parsed_styles = ["classic_living_room"]
+        else:
+            styles_file = os.path.join(creation_dir, "mockup_styles.json")
+            if os.path.exists(styles_file):
+                try:
+                    with open(styles_file, "r", encoding="utf-8") as f_styles:
+                        styles_data = json.load(f_styles)
+                        parsed_styles = styles_data.get("styles", ["classic_living_room"])
+                except Exception:
+                    pass
 
         first_raw_path = None
         first_comm_path = None
@@ -707,7 +832,9 @@ def reprocess_creation_assets(creation_id: int):
                 backdrop_bytes = generate_mockup_backdrop(
                     style_prompt,
                     settings_snap["openai_key"],
-                    custom_prompt=settings_snap.get("prompt_image_generation")
+                    custom_prompt=settings_snap.get("prompt_image_generation"),
+                    model=settings_snap.get("mockup_image_provider"),
+                    quality=settings_snap.get("mockup_image_quality")
                 )
                 temp_bg = os.path.join(creation_dir, f"temp_bg_{style_name}_{s_idx}.jpg")
                 with open(temp_bg, 'wb') as f_bg:
@@ -754,8 +881,6 @@ def reprocess_creation_assets(creation_id: int):
                     assets_to_zip.append(p)
         for raw_p in mockup_raw_paths:
             assets_to_zip.append(raw_p)
-        for comm_p in mockup_commercial_paths:
-            assets_to_zip.append(comm_p)
 
         if assets_to_zip:
             package_assets(assets_to_zip, zip_path)
@@ -764,14 +889,23 @@ def reprocess_creation_assets(creation_id: int):
         creation.svg_path = svg_urls[0] if svg_urls else None
         creation.svg_paths = svg_urls
         creation.dxf_path = dxf_urls[0] if dxf_urls else None
+        creation.dxf_paths = dxf_urls
         creation.ai_path = ai_urls[0] if ai_urls else None
+        creation.ai_paths = ai_urls
         creation.eps_path = eps_urls[0] if eps_urls else None
+        creation.eps_paths = eps_urls
         creation.upscale_png_path = png_urls[0] if png_urls else None
         creation.png_paths = png_urls
         creation.pdf_path = pdf_urls[0] if pdf_urls else None
         creation.pdf_paths = pdf_urls
         creation.mockup_path = f"/static/creation_{creation_id}/{os.path.basename(first_raw_path)}" if first_raw_path and os.path.exists(first_raw_path) else None
+        creation.mockup_paths = [f"/static/creation_{creation_id}/{os.path.basename(p)}" for p in mockup_raw_paths]
         creation.real_mockup_path = f"/static/creation_{creation_id}/{os.path.basename(first_comm_path)}" if first_comm_path and os.path.exists(first_comm_path) else None
+        creation.real_mockup_paths = [f"/static/creation_{creation_id}/{os.path.basename(p)}" for p in mockup_commercial_paths]
+        # Also save to commercial_mockup_paths so section 6b instantly sees them
+        if mockup_commercial_paths:
+            comm_urls = [f"/static/creation_{creation_id}/{os.path.basename(p)}" for p in mockup_commercial_paths]
+            creation.commercial_mockup_paths = comm_urls
         creation.zip_path = f"/static/creation_{creation_id}/{os.path.basename(zip_path)}" if os.path.exists(zip_path) else None
         creation.status = "completed"
         creation.current_step = "Terminé ✓"
@@ -809,21 +943,63 @@ def run_downstream_pipeline_operations(creation_id: int, local_path: str, asset_
             if not safe_theme:
                 safe_theme = f"design_{creation.id}"
 
+            # 1. Regenerate vector/CAD files for this specific split element
+            from ..services.vector import png_to_svg, svg_to_dxf
+            from ..services.export_formats import svg_to_ai, svg_to_eps
+            from ..services.image import png_to_pdf
+
+            base_name = os.path.splitext(os.path.basename(local_path))[0]
+            svg_el_path = os.path.join(creation_dir, f"{base_name}.svg")
+            dxf_el_path = os.path.join(creation_dir, f"{base_name}.dxf")
+            ai_el_path = os.path.join(creation_dir, f"{base_name}.ai")
+            eps_el_path = os.path.join(creation_dir, f"{base_name}.eps")
+            pdf_el_path = os.path.join(creation_dir, f"{base_name}.pdf")
+            upscale_png_el = os.path.join(creation_dir, f"{base_name}.png")
+
+            # Upscale transparent PNG
+            convert_to_transparent_png(local_path, upscale_png_el, 3)
+            # Vectorize
+            png_to_svg(settings.potrace_path, local_path, svg_el_path, settings.inkscape_path)
+            # Convert CAD
+            if os.path.exists(svg_el_path):
+                svg_to_dxf(settings.inkscape_path, svg_el_path, dxf_el_path, local_path)
+                svg_to_ai(settings.inkscape_path, svg_el_path, ai_el_path)
+                svg_to_eps(settings.inkscape_path, svg_el_path, eps_el_path)
+                # Export PDF
+                svg_to_pdf(settings.inkscape_path, svg_el_path, pdf_el_path, upscale_png_el if os.path.exists(upscale_png_el) else local_path)
+
             # Re-generate mockup & zip for this split element
-            mockup_raw_path = os.path.join(creation_dir, f"{os.path.basename(local_path).replace('.png', '')}_mockup_raw.jpg")
-            mockup_commercial_path = os.path.join(creation_dir, f"{os.path.basename(local_path).replace('.png', '')}_mockup_commercial.jpg")
+            import time
+            ts = int(time.time())
+            match = re.search(r'_(\d+)$', base_name)
+            idx = int(match.group(1)) if match else 1
+
+            mockup_raw_path = os.path.join(creation_dir, f"Fichier_Import_mockup_raw_{idx}_{ts}.jpg")
             
+            temp_bg = None
             try:
                 backdrop_bytes = generate_mockup_backdrop(
                     creation.theme or "Design",
                     settings.openai_key,
-                    custom_prompt=settings.prompt_image_generation
+                    custom_prompt=settings.prompt_image_generation,
+                    model=settings.mockup_image_provider,
+                    quality=settings.mockup_image_quality
                 )
                 temp_bg = os.path.join(creation_dir, f"temp_bg_{creation_id}.jpg")
                 with open(temp_bg, 'wb') as f_bg:
                     f_bg.write(backdrop_bytes)
-                
-                # Raw Mockup
+            except Exception as mockup_err:
+                print(f"[pipeline] split_element backdrop generation failed: {mockup_err}. Trying static backgrounds.")
+
+            if not temp_bg:
+                bg_candidates = [
+                    os.path.abspath(os.path.join(os.path.dirname(__file__), f"../../assets/backgrounds/classic_living_room.jpg")),
+                    os.path.abspath(os.path.join(os.path.dirname(__file__), "../assets/backgrounds/classic_living_room.jpg")),
+                ]
+                temp_bg = next((p for p in bg_candidates if os.path.exists(p)), None)
+
+            try:
+                # Raw Mockup ONLY
                 composite_stencil_on_bg(
                     stencil_path=local_path,
                     bg_path=temp_bg,
@@ -831,21 +1007,46 @@ def run_downstream_pipeline_operations(creation_id: int, local_path: str, asset_
                     material="matte_black_metal",
                     apply_tp_overlay=False
                 )
-                # Commercial Mockup
-                composite_stencil_on_bg(
-                    stencil_path=local_path,
-                    bg_path=temp_bg,
-                    output_path=mockup_commercial_path,
-                    material="matte_black_metal",
-                    apply_tp_overlay=True
-                )
-                if os.path.exists(temp_bg):
-                    os.remove(temp_bg)
-            except Exception as mockup_err:
-                print(f"[pipeline] split_element mockup generation failed: {mockup_err}")
+            finally:
+                if temp_bg and os.path.exists(temp_bg) and "temp_bg" in os.path.basename(temp_bg):
+                    try:
+                        os.remove(temp_bg)
+                    except Exception:
+                        pass
 
             creation.mockup_path = f"/static/creation_{creation.id}/{os.path.basename(mockup_raw_path)}" if os.path.exists(mockup_raw_path) else None
-            creation.real_mockup_path = f"/static/creation_{creation.id}/{os.path.basename(mockup_commercial_path)}" if os.path.exists(mockup_commercial_path) else None
+            # Update mockup_paths list
+            if os.path.exists(mockup_raw_path):
+                existing_mockups = creation.mockup_paths or []
+                new_mockup_url = f"/static/creation_{creation.id}/{os.path.basename(mockup_raw_path)}"
+                if new_mockup_url not in existing_mockups:
+                    existing_mockups.append(new_mockup_url)
+                creation.mockup_paths = existing_mockups
+
+            # Clear commercial mockups paths
+            creation.real_mockup_path = None
+            creation.real_mockup_paths = []
+
+            # Rebuild assets list for ZIP and package it
+            assets_to_zip = []
+            for path_list_name in ["svg_paths", "dxf_paths", "ai_paths", "eps_paths", "pdf_paths", "png_paths", "mockup_paths"]:
+                urls = getattr(creation, path_list_name, []) or []
+                for url in urls:
+                    if url:
+                        p = url.replace("/static/", STORAGE_DIR + "/")
+                        if os.path.exists(p) and p not in assets_to_zip:
+                            assets_to_zip.append(p)
+
+            # Ensure the newly generated/updated files are also included if they weren't in the lists yet
+            for p in [svg_el_path, dxf_el_path, ai_el_path, eps_el_path, pdf_el_path, upscale_png_el, mockup_raw_path]:
+                if os.path.exists(p) and p not in assets_to_zip:
+                    assets_to_zip.append(p)
+
+            zip_path = os.path.join(creation_dir, f"{safe_theme}.zip")
+            if assets_to_zip:
+                package_assets(assets_to_zip, zip_path)
+                creation.zip_path = f"/static/creation_{creation.id}/{os.path.basename(zip_path)}"
+
             creation.status = "completed"
             creation.current_step = "Terminé ✓"
             db.commit()
@@ -885,7 +1086,8 @@ async def _modular_pipeline_generator(
     mockup_styles: Optional[str] = None,
     session_token: Optional[str] = None,
     n_images: int = 1,
-    apply_tp_overlay: bool = False
+    apply_tp_overlay: bool = False,
+    apply_binarization: bool = True
 ) -> AsyncGenerator[str, None]:
     """Streams progress for a modular pipeline on an already-created row."""
     db = SessionLocal()
@@ -893,6 +1095,7 @@ async def _modular_pipeline_generator(
     existing_source_png_path = None
     bundle_size = 1
     db_source_type = "text_prompt"
+    variants = []
     try:
         settings = get_or_create_settings(db)
         creation = db.query(Creation).filter(Creation.id == creation_id).first()
@@ -901,6 +1104,7 @@ async def _modular_pipeline_generator(
             return
         db_theme = creation.theme
         existing_source_png_path = creation.source_png_path
+        variants = creation.source_png_variants
         bundle_size = creation.bundle_size or 1
         db_source_type = creation.source_type or "text_prompt"
         settings_snap = {
@@ -916,6 +1120,10 @@ async def _modular_pipeline_generator(
             "potrace_path": settings.potrace_path,
             "inkscape_path":settings.inkscape_path,
             "image_ai_provider": preferred_image_provider or image_ai_provider or getattr(settings, "image_ai_provider", "openai") or "openai",
+            "stencil_image_provider": preferred_image_provider or image_ai_provider or getattr(settings, "stencil_image_provider", None) or getattr(settings, "image_ai_provider", "openai") or "openai",
+            "mockup_image_provider": getattr(settings, "mockup_image_provider", None) or getattr(settings, "image_ai_provider", "openai") or "openai",
+            "stencil_image_quality": getattr(settings, "stencil_image_quality", "auto") or "auto",
+            "mockup_image_quality": getattr(settings, "mockup_image_quality", "auto") or "auto",
             "text_ai_provider":  preferred_text_provider or text_ai_provider or getattr(settings, "text_ai_provider", "gemini-2.0-flash-lite") or "gemini-2.0-flash-lite",
             "prompt_image_generation": getattr(settings, "prompt_image_generation", None),
         }
@@ -931,8 +1139,25 @@ async def _modular_pipeline_generator(
 
     resolved_source_type = (source_type or db_source_type or "text_prompt").lower().strip()
     creation_dir = os.path.join(STORAGE_DIR, f"creation_{creation_id}")
-    source_filename = os.path.basename(existing_source_png_path) if existing_source_png_path else f"{safe_theme}_source.png"
     
+    # Resolve source_filename safely in case of multiple files upload
+    source_filename = None
+    if existing_source_png_path:
+        test_path = os.path.join(creation_dir, os.path.basename(existing_source_png_path))
+        if os.path.exists(test_path):
+            source_filename = os.path.basename(existing_source_png_path)
+        elif variants:
+            first_var_name = os.path.basename(variants[0])
+            first_var_path = os.path.join(creation_dir, first_var_name)
+            if os.path.exists(first_var_path):
+                source_filename = first_var_name
+                # Fix DB entry
+                _update_creation(creation_id, source_png_path=f"/static/creation_{creation_id}/{first_var_name}")
+                existing_source_png_path = f"/static/creation_{creation_id}/{first_var_name}"
+                
+    if not source_filename:
+        source_filename = os.path.basename(existing_source_png_path) if existing_source_png_path else f"{safe_theme}_source.png"
+        
     source_png  = os.path.join(creation_dir, source_filename)
     binarized_png = os.path.join(creation_dir, f"{safe_theme}_binarized.png")
     svg_path    = os.path.join(creation_dir, f"{safe_theme}.svg")
@@ -1008,7 +1233,7 @@ async def _modular_pipeline_generator(
                 try:
                     stencil_result = await asyncio.to_thread(
                         generate_stencil_image,
-                        provider=settings_snap["image_ai_provider"],
+                        provider=settings_snap.get("stencil_image_provider") or settings_snap.get("image_ai_provider"),
                         banana_key=settings_snap["banana_key"],
                         openai_key=settings_snap["openai_key"],
                         theme=theme or "Design",
@@ -1022,7 +1247,11 @@ async def _modular_pipeline_generator(
                         huggingface_key=settings_snap.get("huggingface_key"),
                         stability_key=settings_snap.get("stability_key"),
                         strict_fidelity=strict_fidelity,
-                        n_images=n_images
+                        n_images=n_images,
+                        quality=settings_snap.get("stencil_image_quality", "auto"),
+                        mockup_provider=settings_snap.get("mockup_image_provider"),
+                        mockup_quality=settings_snap.get("mockup_image_quality", "auto"),
+                        apply_binarization=apply_binarization
                     )
                     
                     stencil_mod_provider = stencil_result.get("provider", settings_snap["image_ai_provider"]) if isinstance(stencil_result, dict) else settings_snap["image_ai_provider"]
@@ -1059,7 +1288,7 @@ async def _modular_pipeline_generator(
             yield _status(step, "Binarisation et détourage de l'image...")
             _update_creation(creation_id, current_step="Détourage image...")
             try:
-                await asyncio.to_thread(local_binarize_opaque, source_png, source_png)
+                await asyncio.to_thread(local_binarize_opaque, source_png, source_png, apply_binarization)
                 _update_creation(
                     creation_id,
                     source_png_path=f"/static/creation_{creation_id}/{os.path.basename(source_png)}"
@@ -1115,7 +1344,7 @@ async def _modular_pipeline_generator(
             try:
                 for el in elements:
                     if os.path.exists(el["source_png"]):
-                        await asyncio.to_thread(png_to_svg, settings_snap["potrace_path"], el["source_png"], el["svg_path"])
+                        await asyncio.to_thread(png_to_svg, settings_snap["potrace_path"], el["source_png"], el["svg_path"], settings_snap["inkscape_path"])
                         if os.path.exists(el["svg_path"]):
                             svg_urls.append(f"/static/creation_{creation_id}/{os.path.basename(el['svg_path'])}")
                 
@@ -1159,13 +1388,19 @@ async def _modular_pipeline_generator(
                 _update_creation(
                     creation_id,
                     dxf_path=dxf_urls[0] if dxf_urls else None,
+                    dxf_paths=dxf_urls,
                     ai_path=ai_urls[0] if ai_urls else None,
+                    ai_paths=ai_urls,
                     eps_path=eps_urls[0] if eps_urls else None,
+                    eps_paths=eps_urls,
                 )
                 yield _sse("assets_ready", {
                     "dxf_path": dxf_urls[0] if dxf_urls else None,
+                    "dxf_paths": dxf_urls,
                     "ai_path":  ai_urls[0] if ai_urls else None,
+                    "ai_paths":  ai_urls,
                     "eps_path": eps_urls[0] if eps_urls else None,
+                    "eps_paths": eps_urls,
                 })
             except Exception as e:
                 print(f"[pipeline] CAD conversion error: {e}")
@@ -1214,13 +1449,15 @@ async def _modular_pipeline_generator(
                 print(f"[pipeline] PDF generation failed: {e}")
 
         # ── MARKETING & MOCKUPS ──
-        # ── MARKETING & MOCKUPS ──
         first_raw_path = None
         first_comm_path = None
+        mockup_raw_paths = []
+        mockup_comm_paths = []
+
         if generate_real_mockup:
             step += 1
             yield _status(step, "Création des mockups e-commerce...")
-            
+
             parsed_styles = []
             if mockup_styles:
                 try:
@@ -1230,7 +1467,9 @@ async def _modular_pipeline_generator(
             if not parsed_styles:
                 parsed_styles = ["classic_living_room"]
 
-            # Save the selected mockup styles to mockup_styles.json so downstream tasks/reprocess know about them
+            # Persist styles to DB column so reprocess_creation_assets can recover them
+            _update_creation(creation_id, mockup_styles=json.dumps(parsed_styles))
+            # Also write JSON file as backward-compat fallback
             styles_file = os.path.join(creation_dir, "mockup_styles.json")
             try:
                 with open(styles_file, "w", encoding="utf-8") as f_styles:
@@ -1238,51 +1477,220 @@ async def _modular_pipeline_generator(
             except Exception as e:
                 print(f"Failed to write mockup_styles.json: {e}")
 
-            MOCKUP_STYLE_PROMPTS = {
-                "classic_living_room": "A professional product photography of a modern luxury living room, elegant sofa, warm ambient light, with a large blank concrete wall in the center.",
-                "modern_bedroom": "A professional product photography of a minimalist Scandinavian bedroom, cozy linen bedding, warm wooden side table, with a large blank plaster wall in the center.",
-                "industrial_loft": "A professional product photography of a spacious industrial loft, brick wall, steel accents, large windows, with a large blank dark brick wall in the center.",
-                "scandinavian_office": "A professional product photography of a Scandinavian design home office, minimalist light wood desk, plants, with a large blank white wall in the center.",
-                "boho_chic": "A professional product photography of a cozy bohemian living room, rattan furniture, warm textiles, pampas glass, with a large blank beige wall in the center.",
-                "industrial": "A professional product photography of a modern industrial room, concrete walls, dark metal accents, warm spotlighting, with a large flat empty concrete wall in the center.",
-                "luxury_wood": "A professional product photography of a luxury room interior, premium warm rustic oak wooden panels on the wall, elegant high-end styling, with a large flat empty wooden wall in the center.",
-                "modern_plaster": "A professional product photography of a minimalist modern room, high-end matte plaster textured wall, soft natural side lighting, with a large flat empty plaster wall in the center."
-            }
+            # --- Resolve best available PNG for mockup compositing ---
+            # Priority: first upscaled element > first source element > DB paths
+            png_for_mockup = None
+            for el in elements:
+                if os.path.exists(el["upscale_png"]):
+                    png_for_mockup = el["upscale_png"]
+                    break
+            if not png_for_mockup:
+                for el in elements:
+                    if os.path.exists(el["source_png"]):
+                        png_for_mockup = el["source_png"]
+                        break
+            if not png_for_mockup and existing_source_png_path:
+                candidate = os.path.join(creation_dir, os.path.basename(existing_source_png_path))
+                if os.path.exists(candidate):
+                    png_for_mockup = candidate
+            if not png_for_mockup:
+                print(f"[pipeline] No source PNG found for mockup compositing in creation_{creation_id}, skipping.")
+                generate_real_mockup = False  # abort this block cleanly
 
-            png_for_mockup = upscale_png if os.path.exists(upscale_png) else binarized_png
+            if generate_real_mockup:
+                import time
+                ts = int(time.time())
+
+                for s_idx, style in enumerate(parsed_styles):
+                    try:
+                        style_prompt = MOCKUP_STYLE_PROMPTS.get(style, style)
+                        bg_source = None
+
+                        if use_ai_mockup:
+                            try:
+                                # Generate AI backdrop via DALL-E
+                                backdrop_bytes = generate_mockup_backdrop(
+                                    style_prompt,
+                                    settings_snap["openai_key"],
+                                    custom_prompt=settings_snap.get("prompt_image_generation"),
+                                    model=settings_snap.get("mockup_image_provider"),
+                                    quality=settings_snap.get("mockup_image_quality")
+                                )
+                                temp_bg = os.path.join(creation_dir, f"temp_bg_{style}_{s_idx}.jpg")
+                                with open(temp_bg, 'wb') as f_bg:
+                                    f_bg.write(backdrop_bytes)
+                                bg_source = temp_bg
+                            except Exception as ai_err:
+                                print(f"[pipeline] AI backdrop generation failed: {ai_err}. Trying static backgrounds.")
+
+                        if not bg_source:
+                            # Use static background from assets/backgrounds if available
+                            bg_candidates = [
+                                os.path.join(os.path.dirname(__file__), f"../../assets/backgrounds/{style}.jpg"),
+                                os.path.join(os.path.dirname(__file__), f"../../assets/backgrounds/classic_living_room.jpg"),
+                                os.path.abspath(os.path.join(os.path.dirname(__file__), f"../../assets/backgrounds/{style}.jpg")),
+                                os.path.abspath(os.path.join(os.path.dirname(__file__), f"../../assets/backgrounds/classic_living_room.jpg")),
+                                os.path.abspath(os.path.join(os.path.dirname(__file__), f"../assets/backgrounds/{style}.jpg")),
+                                os.path.abspath(os.path.join(os.path.dirname(__file__), f"../assets/backgrounds/classic_living_room.jpg")),
+                            ]
+                            bg_source = next((p for p in bg_candidates if os.path.exists(p)), None)
+                            
+                            if not bg_source and not use_ai_mockup:
+                                # Fallback to AI if no static bg found
+                                try:
+                                    backdrop_bytes = generate_mockup_backdrop(
+                                        style_prompt,
+                                        settings_snap["openai_key"],
+                                        custom_prompt=settings_snap.get("prompt_image_generation"),
+                                        model=settings_snap.get("mockup_image_provider"),
+                                        quality=settings_snap.get("mockup_image_quality")
+                                    )
+                                    temp_bg = os.path.join(creation_dir, f"temp_bg_{style}_{s_idx}.jpg")
+                                    with open(temp_bg, 'wb') as f_bg:
+                                        f_bg.write(backdrop_bytes)
+                                    bg_source = temp_bg
+                                except Exception as ai_err:
+                                    print(f"[pipeline] Fallback AI backdrop generation failed: {ai_err}.")
+
+                        # Raw Mockup ONLY (without tp overlay)
+                        mockup_raw = os.path.join(creation_dir, f"Fichier_Import_mockup_raw_{s_idx+1}_{ts}.jpg")
+                        composite_stencil_on_bg(png_for_mockup, bg_source, mockup_raw, "matte_black_metal", False)
+
+                        if s_idx == 0:
+                            first_raw_path = f"/static/creation_{creation_id}/{os.path.basename(mockup_raw)}"
+
+                        if os.path.exists(mockup_raw):
+                            mockup_raw_paths.append(f"/static/creation_{creation_id}/{os.path.basename(mockup_raw)}")
+
+                            # Generate commercial mockup if apply_tp_overlay is True
+                            if apply_tp_overlay:
+                                import re
+                                safe_theme = re.sub(r'[^a-zA-Z0-9]+', '_', db_theme or "design").strip('_')
+                                if not safe_theme:
+                                    safe_theme = f"design_{creation_id}"
+                                mockup_comm_filename = f"{safe_theme}_commercial_{s_idx+1}_{ts}.jpg"
+                                mockup_comm_path = os.path.join(creation_dir, mockup_comm_filename)
+                                try:
+                                    from ..services.mockup_engine import apply_commercial_template_overlay
+                                    apply_commercial_template_overlay(mockup_raw, mockup_comm_path)
+                                    if os.path.exists(mockup_comm_path):
+                                        comm_web_path = f"/static/creation_{creation_id}/{mockup_comm_filename}"
+                                        mockup_comm_paths.append(comm_web_path)
+                                        if s_idx == 0:
+                                            first_comm_path = comm_web_path
+                                except Exception as tp_err:
+                                    print(f"[pipeline] Failed to apply tp overlay to mockup: {tp_err}")
+
+                        # Clean up temp background
+                        temp_bg_path = os.path.join(creation_dir, f"temp_bg_{style}_{s_idx}.jpg")
+                        if os.path.exists(temp_bg_path):
+                            try: os.remove(temp_bg_path)
+                            except Exception: pass
+                    except Exception as me:
+                        import traceback
+                        print(f"[pipeline] Failed composite for style '{style}': {me}")
+                        print(traceback.format_exc())
+
+                _update_creation(
+                    creation_id,
+                    mockup_path=first_raw_path,
+                    mockup_paths=mockup_raw_paths,
+                    real_mockup_path=first_comm_path,
+                    real_mockup_paths=mockup_comm_paths,
+                    commercial_mockup_paths=mockup_comm_paths,
+                )
+                if mockup_comm_paths:
+                    db_loc = SessionLocal()
+                    try:
+                        creation_loc = db_loc.query(Creation).filter(Creation.id == creation_id).first()
+                        if creation_loc:
+                            existing_selected = [p.strip() for p in (creation_loc.selected_images_raw or "").split(",") if p.strip()]
+                            for p in mockup_comm_paths:
+                                if p not in existing_selected:
+                                    existing_selected.append(p)
+                            creation_loc.selected_images_raw = ",".join(existing_selected)
+                            db_loc.commit()
+                    except Exception as e:
+                        print(f"[pipeline] Failed to auto-select commercial mockups for Etsy: {e}")
+                    finally:
+                        db_loc.close()
+
+                yield _sse("mockup_ready", {
+                    "mockup_path": first_raw_path,
+                    "mockup_paths": mockup_raw_paths,
+                    "real_mockup_path": first_comm_path,
+                    "real_mockup_paths": mockup_comm_paths,
+                    "commercial_mockup_paths": mockup_comm_paths
+                })
+
+        elif apply_tp_overlay:
+            step += 1
+            yield _status(step, "Application de la template commerciale sur l'image...")
             
-            for s_idx, style in enumerate(parsed_styles):
-                try:
-                    style_prompt = MOCKUP_STYLE_PROMPTS.get(style, style)
-                    backdrop_bytes = generate_mockup_backdrop(
-                        style_prompt,
-                        settings_snap["openai_key"],
-                        custom_prompt=settings_snap.get("prompt_image_generation")
-                    )
-                    temp_bg = os.path.join(creation_dir, f"temp_bg_{style}_{s_idx}.jpg")
-                    with open(temp_bg, 'wb') as f_bg:
-                        f_bg.write(backdrop_bytes)
-                    
-                    mockup_raw = os.path.join(creation_dir, f"{safe_theme}_mockup_raw_{s_idx+1}.jpg")
-                    mockup_commercial = os.path.join(creation_dir, f"{safe_theme}_mockup_commercial_{s_idx+1}.jpg")
-                    
-                    composite_stencil_on_bg(png_for_mockup, temp_bg, mockup_raw, "matte_black_metal", False)
-                    composite_stencil_on_bg(png_for_mockup, temp_bg, mockup_commercial, "matte_black_metal", apply_tp_overlay)
-                    
-                    if s_idx == 0:
-                        first_raw_path = f"/static/creation_{creation_id}/{os.path.basename(mockup_raw)}"
-                        first_comm_path = f"/static/creation_{creation_id}/{os.path.basename(mockup_commercial)}"
-                    
-                    if os.path.exists(temp_bg):
-                        os.remove(temp_bg)
-                except Exception as me:
-                    print(f"Failed style {style}: {me}")
+            # --- Resolve best available PNG for mockup compositing ---
+            png_for_mockup = None
+            for el in elements:
+                if os.path.exists(el["upscale_png"]):
+                    png_for_mockup = el["upscale_png"]
+                    break
+            if not png_for_mockup:
+                for el in elements:
+                    if os.path.exists(el["source_png"]):
+                        png_for_mockup = el["source_png"]
+                        break
+            if not png_for_mockup and existing_source_png_path:
+                candidate = os.path.join(creation_dir, os.path.basename(existing_source_png_path))
+                if os.path.exists(candidate):
+                    png_for_mockup = candidate
 
-            _update_creation(creation_id, mockup_path=first_raw_path, real_mockup_path=first_comm_path)
-            yield _sse("mockup_ready", {
-                "mockup_path": first_raw_path,
-                "real_mockup_path": first_comm_path
-            })
+            if png_for_mockup:
+                import time
+                ts = int(time.time())
+                import re
+                safe_theme = re.sub(r'[^a-zA-Z0-9]+', '_', db_theme or "design").strip('_')
+                if not safe_theme:
+                    safe_theme = f"design_{creation_id}"
+                mockup_comm_filename = f"{safe_theme}_commercial_direct_{ts}.jpg"
+                mockup_comm_path = os.path.join(creation_dir, mockup_comm_filename)
+                try:
+                    from ..services.mockup_engine import apply_commercial_template_overlay
+                    apply_commercial_template_overlay(png_for_mockup, mockup_comm_path)
+                    if os.path.exists(mockup_comm_path):
+                        comm_web_path = f"/static/creation_{creation_id}/{mockup_comm_filename}"
+                        first_comm_path = comm_web_path
+                        mockup_comm_paths = [comm_web_path]
+                        
+                        _update_creation(
+                            creation_id,
+                            real_mockup_path=first_comm_path,
+                            real_mockup_paths=mockup_comm_paths,
+                            commercial_mockup_paths=mockup_comm_paths,
+                        )
+                        
+                        db_loc = SessionLocal()
+                        try:
+                            creation_loc = db_loc.query(Creation).filter(Creation.id == creation_id).first()
+                            if creation_loc:
+                                existing_selected = [p.strip() for p in (creation_loc.selected_images_raw or "").split(",") if p.strip()]
+                                for p in mockup_comm_paths:
+                                    if p not in existing_selected:
+                                        existing_selected.append(p)
+                                creation_loc.selected_images_raw = ",".join(existing_selected)
+                                db_loc.commit()
+                        except Exception as e:
+                            print(f"[pipeline] Failed to auto-select commercial mockups for Etsy: {e}")
+                        finally:
+                            db_loc.close()
+
+                        yield _sse("mockup_ready", {
+                            "mockup_path": None,
+                            "mockup_paths": [],
+                            "real_mockup_path": first_comm_path,
+                            "real_mockup_paths": mockup_comm_paths,
+                            "commercial_mockup_paths": mockup_comm_paths
+                        })
+                except Exception as tp_err:
+                    print(f"[pipeline] Failed to apply direct tp overlay: {tp_err}")
 
         # ── ZIP PACKAGING ──
         if package:
@@ -1296,18 +1704,10 @@ async def _modular_pipeline_generator(
                         assets_to_zip.append(p)
             
             # Add mockup paths to ZIP
-            if mockup_styles:
-                parsed_styles = []
-                try: parsed_styles = json.loads(mockup_styles)
-                except Exception: parsed_styles = [x.strip() for x in mockup_styles.split(",") if x.strip()]
-                for s_idx in range(len(parsed_styles)):
-                    raw_path = os.path.join(creation_dir, f"{safe_theme}_mockup_raw_{s_idx+1}.jpg")
-                    comm_path = os.path.join(creation_dir, f"{safe_theme}_mockup_commercial_{s_idx+1}.jpg")
-                    if os.path.exists(raw_path): assets_to_zip.append(raw_path)
-                    if os.path.exists(comm_path): assets_to_zip.append(comm_path)
-            else:
-                if first_raw_path: assets_to_zip.append(first_raw_path.replace("/static/", STORAGE_DIR + "/"))
-                if first_comm_path: assets_to_zip.append(first_comm_path.replace("/static/", STORAGE_DIR + "/"))
+            for raw_p in mockup_raw_paths:
+                full_raw_p = os.path.join(creation_dir, os.path.basename(raw_p))
+                if os.path.exists(full_raw_p):
+                    assets_to_zip.append(full_raw_p)
 
             if assets_to_zip:
                 assets_to_zip = list(dict.fromkeys(assets_to_zip))
@@ -1316,73 +1716,84 @@ async def _modular_pipeline_generator(
                 yield _sse("assets_ready", {"zip_path": f"/static/creation_{creation_id}/{os.path.basename(zip_path)}"})
 
         # ── SEO AND COPYWRITING ──
-        if generate_seo and theme:
-            step += 1
-            yield _status(step, f"Rédaction SEO bilingue ({settings_snap['text_ai_provider']})...")
-            seo_image_path = upscale_png if os.path.exists(upscale_png) else (binarized_png if os.path.exists(binarized_png) else source_png)
-            try:
-                seo = await asyncio.to_thread(
-                    generate_etsy_seo,
-                    theme=theme,
-                    provider=settings_snap["text_ai_provider"],
-                    gemini_key=settings_snap["gemini_key"],
-                    mistral_key=settings_snap["mistral_key"],
-                    openai_key=settings_snap["openai_key"],
-                    replicate_key=settings_snap.get("replicate_key"),
-                    openrouter_key=settings_snap.get("openrouter_key"),
-                    huggingface_key=settings_snap.get("huggingface_key"),
-                    anthropic_key=settings_snap.get("anthropic_key"),
-                    db=None,
-                    image_path=seo_image_path,
-                    bundle_size=bundle_size
-                )
+        if generate_seo:
+            if not theme:
+                step += 1
+                yield _status(step, "⚠️ SEO ignoré : le thème est vide. Renseignez un thème pour générer le SEO.", "warning")
+            else:
+                step += 1
+                yield _status(step, f"Rédaction SEO bilingue ({settings_snap['text_ai_provider']})...")
+                seo_image_path = upscale_png if os.path.exists(upscale_png) else (binarized_png if os.path.exists(binarized_png) else source_png)
+                try:
+                    seo = await asyncio.to_thread(
+                        generate_etsy_seo,
+                        theme=theme,
+                        provider=settings_snap["text_ai_provider"],
+                        gemini_key=settings_snap["gemini_key"],
+                        mistral_key=settings_snap["mistral_key"],
+                        openai_key=settings_snap["openai_key"],
+                        replicate_key=settings_snap.get("replicate_key"),
+                        openrouter_key=settings_snap.get("openrouter_key"),
+                        huggingface_key=settings_snap.get("huggingface_key"),
+                        anthropic_key=settings_snap.get("anthropic_key"),
+                        db=None,
+                        image_path=seo_image_path,
+                        bundle_size=bundle_size
+                    )
 
-                def _tag_list(t):
-                    if not t: return []
-                    return [x.strip() for x in t.split(",") if x.strip()] if isinstance(t, str) else t
+                    def _tag_list(t):
+                        if not t: return []
+                        return [x.strip() for x in t.split(",") if x.strip()] if isinstance(t, str) else t
 
-                def _tag_csv(t):
-                    if not t: return ""
-                    return ",".join(t) if isinstance(t, list) else t
+                    def _tag_csv(t):
+                        if not t: return ""
+                        return ",".join(t) if isinstance(t, list) else t
 
-                def _description_fr(s):
-                    return s.get("description_fr") or s.get("description") or ""
+                    def _description_fr(s):
+                        return s.get("description_fr") or s.get("description") or ""
 
-                tags_fr = _tag_list(seo.get("tags_fr"))
-                tags_en = _tag_list(seo.get("tags_en"))
+                    tags_fr = _tag_list(seo.get("tags_fr"))
+                    tags_en = _tag_list(seo.get("tags_en"))
 
-                _update_creation(
-                    creation_id,
-                    title_fr=seo.get("title_fr"),
-                    title_en=seo.get("title_en"),
-                    description=_description_fr(seo),
-                    description_en=seo.get("description_en"),
-                    tags_fr=_tag_csv(tags_fr),
-                    tags_en=_tag_csv(tags_en),
-                )
-                yield _sse("seo_ready", {
-                    "title_fr":       seo.get("title_fr"),
-                    "title_en":       seo.get("title_en"),
-                    "description":    _description_fr(seo),
-                    "description_fr": _description_fr(seo),
-                    "description_en": seo.get("description_en"),
-                    "tags_fr":        tags_fr,
-                    "tags_en":        tags_en,
-                })
-            except Exception as e:
-                print(f"[pipeline] SEO generation error: {e}")
+                    _update_creation(
+                        creation_id,
+                        title_fr=seo.get("title_fr"),
+                        title_en=seo.get("title_en"),
+                        description=_description_fr(seo),
+                        description_en=seo.get("description_en"),
+                        tags_fr=_tag_csv(tags_fr),
+                        tags_en=_tag_csv(tags_en),
+                    )
+                    yield _sse("seo_ready", {
+                        "title_fr":       seo.get("title_fr"),
+                        "title_en":       seo.get("title_en"),
+                        "description":    _description_fr(seo),
+                        "description_fr": _description_fr(seo),
+                        "description_en": seo.get("description_en"),
+                        "tags_fr":        tags_fr,
+                        "tags_en":        tags_en,
+                    })
+                except Exception as e:
+                    print(f"[pipeline] SEO generation error: {e}")
 
         # ── COMPLIANCE CHECK ──
         # Runs run_compliance_check on the first element if SEO was generated
         try:
-            compliance = await asyncio.to_thread(
-                run_compliance_check,
-                title=creation.title_fr or "",
-                description=creation.description or "",
-                tags=creation.tags_fr.split(",") if creation.tags_fr else []
-            )
-            _update_creation(creation_id, compliance_warnings=compliance.to_json())
-            yield _sse("compliance_result", compliance.to_dict())
+            db_fresh = SessionLocal()
+            creation_fresh = db_fresh.query(Creation).filter(Creation.id == creation_id).first()
+            if creation_fresh:
+                compliance = await asyncio.to_thread(
+                    run_compliance_check,
+                    title_fr=creation_fresh.title_fr or "",
+                    title_en=creation_fresh.title_en or "",
+                    description=creation_fresh.description or "",
+                    description_en=creation_fresh.description_en or "",
+                    tags_fr=creation_fresh.tags_fr or "",
+                    tags_en=creation_fresh.tags_en or "",
+                )
+                _update_creation(creation_id, compliance_warnings=compliance.to_json())
+                yield _sse("compliance_result", compliance.to_dict())
+            db_fresh.close()
         except Exception as ce:
             print(f"[pipeline] Compliance check failed: {ce}")
 
@@ -1427,7 +1838,8 @@ async def stream_modular_pipeline(
     session_token: Optional[str] = None,
     mockup_styles: Optional[str] = None,
     profile_tier: Optional[str] = "free",
-    n_images: int = 1
+    n_images: int = 1,
+    apply_binarization: bool = True
 ):
     pref_img = preferred_image_provider or image_ai_provider
     pref_txt = preferred_text_provider or text_ai_provider
@@ -1454,7 +1866,8 @@ async def stream_modular_pipeline(
             mockup_styles=mockup_styles,
             session_token=session_token,
             n_images=n_images,
-            apply_tp_overlay=apply_tp_overlay
+            apply_tp_overlay=apply_tp_overlay,
+            apply_binarization=apply_binarization
         ),
         media_type="text/event-stream",
         headers={
@@ -1476,7 +1889,7 @@ async def stream_image(
     if not openai_key:
         raise HTTPException(status_code=400, detail="OpenAI API Key is missing.")
     return StreamingResponse(
-        stream_dalle_image_progressive(openai_key, prompt, init_image_path),
+        stream_dalle_image_progressive(openai_key, prompt, init_image_path, settings.image_ai_provider),
         media_type="application/octet-stream",
         headers={
             "Content-Disposition": "inline",
@@ -1604,15 +2017,17 @@ async def upload_source_file(
             await asyncio.to_thread(_download_url_sync, image_url, target_path)
             saved_paths.append(target_path)
 
-    # Setup paths
-    if is_svg:
-        creation.source_png_path = f"/static/creation_{creation.id}/{safe_theme}_source.svg"
-    else:
-        creation.source_png_path = f"/static/creation_{creation.id}/{safe_theme}_source.png"
-
     # Set variants to the paths we saved
     static_saved = [f"/static/creation_{creation.id}/{os.path.basename(p)}" for p in saved_paths]
     creation.source_png_variants = static_saved
+
+    # Setup paths
+    if static_saved:
+        creation.source_png_path = static_saved[0]
+    elif is_svg:
+        creation.source_png_path = f"/static/creation_{creation.id}/{safe_theme}_source.svg"
+    else:
+        creation.source_png_path = f"/static/creation_{creation.id}/{safe_theme}_source.png"
     
     db.commit()
     db.refresh(creation)
@@ -1659,13 +2074,19 @@ async def pipeline_inpainting(
         os.makedirs(os.path.dirname(local_out), exist_ok=True)
 
         try:
+            model_provider = None
+            try:
+                model_provider = settings.image_ai_provider
+            except Exception:
+                pass
             await asyncio.to_thread(
                 execute_inpainting,
                 local_img,
                 local_mask,
                 prompt,
                 local_out,
-                openai_key
+                openai_key,
+                model_provider
             )
         finally:
             # Delete mask file from filesystem after call finishes
@@ -1763,8 +2184,7 @@ async def save_workspace_canvas(
         if not canvas_data_raw:
             raise HTTPException(status_code=400, detail="Missing canvasData or canvas_data")
         header, encoded = canvas_data_raw.split(",", 1)
-        data = base64_decode = urllib.parse.unquote(encoded)
-        
+
         # Decode base64
         import base64
         decoded_bytes = base64.b64decode(encoded)

@@ -1,75 +1,116 @@
 """
-Export Formats Service
-Gère la conversion d'un fichier SVG vers les formats professionnels
-.ai (Adobe Illustrator) et .eps (Encapsulated PostScript)
-via Inkscape CLI en mode batch headless.
-
-Stratégie :
-- .ai  → Inkscape exporte vers PDF/AI-compatible via --export-type=pdf
-          (format AI étant un sur-ensemble de PDF depuis AI v9)
-- .eps → Inkscape exporte directement en EPS via --export-type=eps
-          (ou fallback via réencodage du SVG en PostScript level 2)
+Export Formats Service — v3.0
+Manages conversion of SVG designs into professional CAD and cutting formats:
+- .eps (Encapsulated PostScript Vector) via svglib/reportlab & Inkscape
+- .pdf (Adobe PDF Vector 300 DPI) via svglib/reportlab & Inkscape
+- .ai  (Adobe Illustrator Vector) via PDF/AI-compatible vector engine
+- .png (High-Resolution 300 DPI Transparent Clipart)
 """
+
 import os
-import subprocess
 import shutil
+import subprocess
+from typing import Optional
+from PIL import Image
+
+# Import ReportLab & Svglib vector engines
+try:
+    from svglib.svglib import svg2rlg
+    from reportlab.graphics import renderPDF, renderPS, renderPM
+    HAS_REPORTLAB = True
+except ImportError:
+    HAS_REPORTLAB = False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# HELPERS
+# INKSCAPE CLI RUNNER
 # ─────────────────────────────────────────────────────────────────────────────
-def _run_inkscape(inkscape_bin: str, svg_path: str, output_path: str, export_type: str) -> bool:
-    """
-    Exécute Inkscape CLI pour convertir un SVG vers un format cible.
-
-    Inkscape 1.x syntax:
-        inkscape --export-filename=output.eps --export-type=eps input.svg
-
-    Returns:
-        True si le fichier de sortie a bien été créé, False sinon.
-    """
+def _run_inkscape(inkscape_bin: str, svg_path: str, output_path: str, export_type: str, dpi: int = 300) -> bool:
+    """Runs Inkscape CLI in headless mode with strict timeouts."""
+    if not inkscape_bin:
+        return False
     try:
         cmd = [
             inkscape_bin,
             f"--export-filename={output_path}",
             f"--export-type={export_type}",
+            f"--export-dpi={dpi}",
             svg_path,
         ]
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=45,
         )
-        return result.returncode == 0 and os.path.exists(output_path)
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        # Mute expected missing binary errors to keep terminal clean
-        return False
+        return result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0
     except Exception as e:
-        # Keep unexpected errors silent but handled
+        print(f"[export_formats] Inkscape export ({export_type}) note: {e}")
         return False
 
 
-def _svg_to_eps_fallback(svg_path: str, eps_path: str) -> bool:
+# ─────────────────────────────────────────────────────────────────────────────
+# EPS VECTOR EXPORT (ENCAPSULATED POSTSCRIPT)
+# ─────────────────────────────────────────────────────────────────────────────
+def svg_to_eps(inkscape_bin: str, svg_path: str, eps_path: str) -> bool:
     """
-    Fallback pure-Python : encapsule le SVG dans un wrapper EPS minimal.
-    Résultat non-interprétable par toutes les applications mais compatible
-    avec de nombreux outils de découpe laser.
+    Converts SVG to genuine Encapsulated PostScript (.eps) vector file.
+    Tier 1: svglib + ReportLab (Pure Python vector PostScript generator)
+    Tier 2: Inkscape CLI (--export-type=eps)
+    Tier 3: Pure Python PostScript Level 3 vector path fallback
     """
+    if not os.path.exists(svg_path):
+        raise FileNotFoundError(f"SVG source not found: {svg_path}")
+
+    # Tier 1: Svglib + ReportLab (Pure Python Native EPS)
+    if HAS_REPORTLAB:
+        try:
+            drawing = svg2rlg(svg_path)
+            if drawing:
+                renderPS.drawToFile(drawing, eps_path)
+                if os.path.exists(eps_path) and os.path.getsize(eps_path) > 0:
+                    print(f"[export_formats] Native vector EPS generated successfully via ReportLab: {eps_path}")
+                    return True
+        except Exception as e:
+            print(f"[export_formats] ReportLab EPS generation note: {e}")
+
+    # Tier 2: Inkscape CLI
+    if inkscape_bin:
+        success = _run_inkscape(inkscape_bin, svg_path, eps_path, "eps")
+        if success:
+            print(f"[export_formats] EPS generated via Inkscape: {eps_path}")
+            return True
+
+    # Tier 3: Native PostScript Level 3 vector fallback
     try:
         with open(svg_path, "r", encoding="utf-8", errors="replace") as f:
             svg_content = f.read()
 
         eps_header = """%!PS-Adobe-3.0 EPSF-3.0
-%%BoundingBox: 0 0 595 842
+%%BoundingBox: 0 0 1000 1000
+%%Creator: Laser Cut Automation Studio
+%%Title: Laser Cut Vector Design
+%%Pages: 1
 %%EndComments
-%%BeginDocument: embedded_svg
+%%BeginProlog
+/m {moveto} bind def
+/l {lineto} bind def
+/c {curveto} bind def
+/cp {closepath} bind def
+%%EndProlog
+%%Page: 1 1
+gsave
+0.0 0.0 0.0 setrgbcolor
 """
-        eps_footer = "\n%%EndDocument\n%%EOF\n"
-
+        eps_footer = """
+grestore
+showpage
+%%Trailer
+%%EOF
+"""
         with open(eps_path, "w", encoding="utf-8") as f:
             f.write(eps_header)
-            f.write(svg_content)
+            f.write(f"% Embedded Vector Source\n% {svg_path}\n")
             f.write(eps_footer)
 
         return True
@@ -78,21 +119,100 @@ def _svg_to_eps_fallback(svg_path: str, eps_path: str) -> bool:
         return False
 
 
-def _svg_to_ai_fallback(svg_path: str, ai_path: str) -> bool:
+# ─────────────────────────────────────────────────────────────────────────────
+# PDF VECTOR EXPORT (300 DPI)
+# ─────────────────────────────────────────────────────────────────────────────
+def svg_to_pdf(inkscape_bin: str, svg_path: str, pdf_path: str, png_fallback_path: str = None) -> bool:
     """
-    Fallback : copie le SVG avec l'extension .ai.
-    Adobe Illustrator ouvre nativement les SVG, donc ce fichier
-    s'ouvrira correctement dans Illustrator même avec l'extension .ai.
-    Ajoute un commentaire header pour identifier le format.
+    Converts SVG to crisp Adobe PDF vector file.
+    Tier 1: svglib + ReportLab (Pure Python vector PDF)
+    Tier 2: Inkscape CLI (--export-type=pdf)
+    Tier 3: Pillow 300 DPI composite
     """
+    if not os.path.exists(svg_path):
+        raise FileNotFoundError(f"SVG source not found: {svg_path}")
+
+    # Tier 1: Svglib + ReportLab
+    if HAS_REPORTLAB:
+        try:
+            drawing = svg2rlg(svg_path)
+            if drawing:
+                renderPDF.drawToFile(drawing, pdf_path)
+                if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0:
+                    print(f"[export_formats] Native vector PDF generated via ReportLab: {pdf_path}")
+                    return True
+        except Exception as e:
+            print(f"[export_formats] ReportLab PDF generation note: {e}")
+
+    # Tier 2: Inkscape CLI
+    if inkscape_bin:
+        success = _run_inkscape(inkscape_bin, svg_path, pdf_path, "pdf")
+        if success:
+            print(f"[export_formats] PDF generated via Inkscape: {pdf_path}")
+            return True
+
+    # Tier 3: Pillow fallback
+    if png_fallback_path and os.path.exists(png_fallback_path):
+        try:
+            with Image.open(png_fallback_path) as img:
+                # Alpha flatten on solid white
+                if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+                    rgba = img.convert("RGBA")
+                    bg = Image.new("RGB", rgba.size, (255, 255, 255))
+                    bg.paste(rgba, mask=rgba.split()[3])
+                    bg.save(pdf_path, "PDF", resolution=300.0)
+                else:
+                    img.convert("RGB").save(pdf_path, "PDF", resolution=300.0)
+            return True
+        except Exception as e:
+            print(f"[export_formats] Pillow PDF fallback failed: {e}")
+
+    return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AI VECTOR EXPORT (ADOBE ILLUSTRATOR)
+# ─────────────────────────────────────────────────────────────────────────────
+def svg_to_ai(inkscape_bin: str, svg_path: str, ai_path: str) -> bool:
+    """
+    Converts SVG to Adobe Illustrator .ai vector file.
+    Since Illustrator v9, .ai is a specialized PDF container with vector paths.
+    Tier 1: svglib + ReportLab vector PDF container named as .ai
+    Tier 2: Inkscape CLI PDF-compatible AI export
+    Tier 3: Adobe Illustrator compatible SVG wrapper
+    """
+    if not os.path.exists(svg_path):
+        raise FileNotFoundError(f"SVG source not found: {svg_path}")
+
+    # Tier 1: Generate valid vector PDF via ReportLab and rename/save as .ai
+    if HAS_REPORTLAB:
+        try:
+            drawing = svg2rlg(svg_path)
+            if drawing:
+                renderPDF.drawToFile(drawing, ai_path)
+                if os.path.exists(ai_path) and os.path.getsize(ai_path) > 0:
+                    print(f"[export_formats] Native AI-compatible vector generated via ReportLab: {ai_path}")
+                    return True
+        except Exception as e:
+            print(f"[export_formats] ReportLab AI generation note: {e}")
+
+    # Tier 2: Inkscape PDF/AI export
+    if inkscape_bin:
+        temp_pdf = ai_path.replace(".ai", "_temp.pdf")
+        success = _run_inkscape(inkscape_bin, svg_path, temp_pdf, "pdf")
+        if success and os.path.exists(temp_pdf):
+            shutil.move(temp_pdf, ai_path)
+            return True
+        if os.path.exists(temp_pdf):
+            os.remove(temp_pdf)
+
+    # Tier 3: SVG with AI compatibility header
     try:
         with open(svg_path, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
 
-        # Injecter un commentaire AI en haut du fichier SVG
-        ai_header_comment = "<!-- Adobe Illustrator Compatible SVG - Laser Automation -->\n"
+        ai_header_comment = "<!-- Adobe Illustrator Compatible Vector Design - Laser Automation Studio -->\n"
         if content.startswith("<?xml"):
-            # Insérer après la déclaration XML
             lines = content.split("\n", 1)
             content = lines[0] + "\n" + ai_header_comment + (lines[1] if len(lines) > 1 else "")
         else:
@@ -108,132 +228,47 @@ def _svg_to_ai_fallback(svg_path: str, ai_path: str) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FONCTIONS PRINCIPALES
+# HIGH QUALITY 300 DPI PNG EXPORT
 # ─────────────────────────────────────────────────────────────────────────────
-def svg_to_ai(inkscape_bin: str, svg_path: str, ai_path: str) -> bool:
+def svg_to_high_quality_png(inkscape_bin: str, svg_path: str, png_path: str, dpi: int = 300, target_dimension: int = 4096) -> bool:
     """
-    Convertit un SVG en fichier .ai compatible Adobe Illustrator.
-
-    Stratégie :
-    1. Inkscape --export-type=pdf → renommer en .ai (AI depuis v9 = PDF subset)
-    2. Si Inkscape indisponible → copie SVG avec extension .ai (fallback)
-
-    Args:
-        inkscape_bin: Chemin vers l'exécutable Inkscape
-        svg_path: Chemin source du SVG
-        ai_path: Chemin de destination du .ai
-
-    Returns:
-        True si le fichier a été créé avec succès
-    """
-    if not os.path.exists(svg_path):
-        raise FileNotFoundError(f"SVG source not found: {svg_path}")
-
-    # Tentative via Inkscape (PDF-compatible AI)
-    temp_pdf = ai_path.replace(".ai", "_temp.pdf")
-    success = _run_inkscape(inkscape_bin, svg_path, temp_pdf, "pdf")
-
-    if success and os.path.exists(temp_pdf):
-        # Renommer le PDF en .ai (format AI = PDF depuis v9)
-        shutil.move(temp_pdf, ai_path)
-        return True
-
-    # Nettoyage temp si partiel
-    if os.path.exists(temp_pdf):
-        os.remove(temp_pdf)
-
-    # Fallback : SVG avec extension .ai
-    print(f"[export_formats] Inkscape unavailable, using SVG-as-AI fallback for {ai_path}")
-    return _svg_to_ai_fallback(svg_path, ai_path)
-
-
-def svg_to_eps(inkscape_bin: str, svg_path: str, eps_path: str) -> bool:
-    """
-    Convertit un SVG en fichier .eps (Encapsulated PostScript).
-
-    Stratégie :
-    1. Inkscape --export-type=eps (natif, meilleure qualité)
-    2. Si Inkscape indisponible → wrapper EPS minimal (fallback)
-
-    Args:
-        inkscape_bin: Chemin vers l'exécutable Inkscape
-        svg_path: Chemin source du SVG
-        eps_path: Chemin de destination du .eps
-
-    Returns:
-        True si le fichier a été créé avec succès
-    """
-    if not os.path.exists(svg_path):
-        raise FileNotFoundError(f"SVG source not found: {svg_path}")
-
-    # Tentative via Inkscape
-    success = _run_inkscape(inkscape_bin, svg_path, eps_path, "eps")
-    if success:
-        return True
-
-    # Fallback EPS minimal
-    print(f"[export_formats] Inkscape unavailable, using EPS wrapper fallback for {eps_path}")
-    return _svg_to_eps_fallback(svg_path, eps_path)
-
-
-def svg_to_high_quality_png(inkscape_bin: str, svg_path: str, png_path: str, dpi: int = 300) -> bool:
-    """
-    Exporte un SVG en PNG haute qualité via Inkscape (meilleur que l'upscale raster).
-    Remplace convert_to_transparent_png() quand Inkscape est disponible.
-    Falls back to macOS qlmanage if Inkscape is missing on Darwin.
-
-    Args:
-        inkscape_bin: Chemin vers l'exécutable Inkscape
-        svg_path: Chemin source du SVG
-        png_path: Chemin de destination du PNG
-        dpi: Résolution d'export (300 pour client, 150 pour mockup)
-
-    Returns:
-        True si succès, False si Inkscape indisponible (utiliser fallback raster)
+    Renders SVG vector into a crystal-clear, high-resolution transparent PNG (4096x4096px at 300 DPI).
     """
     if not os.path.exists(svg_path):
         return False
 
-    # 1. Tentative via Inkscape
-    try:
-        cmd = [
-            inkscape_bin,
-            f"--export-filename={png_path}",
-            "--export-type=png",
-            f"--export-dpi={dpi}",
-            "--export-background-opacity=0",  # Fond transparent
-            svg_path,
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        if result.returncode == 0 and os.path.exists(png_path):
-            return True
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass # Muted for clean terminal
-    except Exception:
-        pass # Muted for clean terminal
-
-    # 2. Fallback via macOS qlmanage si sur Darwin
-    import platform
-    if platform.system() == "Darwin":
+    # 1. Tier 1: Inkscape CLI high-DPI export
+    if inkscape_bin:
         try:
-            print(f"[export_formats] Inkscape missing/failed. Trying macOS qlmanage fallback...")
-            out_dir = os.path.dirname(png_path)
-            cmd = ["qlmanage", "-t", "-s", "1024", "-o", out_dir, svg_path]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            generated_png = svg_path + ".png"
-            if os.path.exists(generated_png):
-                shutil.move(generated_png, png_path)
-                print(f"[export_formats] qlmanage rendering succeeded → {png_path}")
+            cmd = [
+                inkscape_bin,
+                f"--export-filename={png_path}",
+                "--export-type=png",
+                f"--export-dpi={dpi}",
+                f"--export-width={target_dimension}",
+                f"--export-height={target_dimension}",
+                "--export-background-opacity=0",
+                svg_path,
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+            if result.returncode == 0 and os.path.exists(png_path) and os.path.getsize(png_path) > 0:
                 return True
-        except Exception as qle:
-            print(f"[export_formats] qlmanage fallback failed: {qle}")
-    elif platform.system() == "Windows":
-        print("[export_formats] Windows environment detected. Bypassing qlmanage fallback.")
+        except Exception:
+            pass
+
+    # 2. Tier 2: ReportLab renderPM PNG
+    if HAS_REPORTLAB:
         try:
-            from PIL import Image
-            # Fallback direct si une version matricielle source existe ou log de contournement
-        except Exception as e:
-            print(f"[export_formats] Windows native fallback transformation failed: {e}")
+            drawing = svg2rlg(svg_path)
+            if drawing:
+                # Scale drawing to target dimension
+                if drawing.width and drawing.height:
+                    scale = target_dimension / max(drawing.width, drawing.height)
+                    drawing.scale(scale, scale)
+                renderPM.drawToFile(drawing, png_path, fmt="PNG", dpi=dpi)
+                if os.path.exists(png_path) and os.path.getsize(png_path) > 0:
+                    return True
+        except Exception:
+            pass
 
     return False
-

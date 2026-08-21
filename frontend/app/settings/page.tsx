@@ -5,27 +5,40 @@ import { apiUrl } from "@/lib/api";
 import Link from "next/link";
 import {
   Save, Settings as SettingsIcon, Image as ImageIcon,
-  FileText, Wrench, Zap, Star, Gift, ChevronDown, Store,
+  FileText, Wrench, Zap, Star, Gift, ChevronDown, Store, Shield,
+  HardDrive, Trash2,
 } from "lucide-react";
 
 // ── Generation profile presets ──────────────────────────────────────────────
 const PROFILES = {
   pro: {
     label: "🎨 Mode Studio (Pro)",
-    description: "Meilleure qualité — Claude Haiku + DALL-E 3 (pro)",
-    image_ai_provider: "dall-e-3",
+    description: "Meilleure qualité — Claude Haiku + GPT Image 2 (pro)",
+    image_ai_provider: "gpt-image-2",
+    stencil_image_provider: "gpt-image-2",
+    mockup_image_provider: "gpt-image-2",
+    stencil_image_quality: "auto",
+    mockup_image_quality: "auto",
     text_ai_provider: "claude-3-5-haiku",
   },
   eco: {
     label: "⚡ Mode Artisan (Rentable)",
     description: "Équilibré — GPT-4o-mini + Flux Pro (eco)",
     image_ai_provider: "black-forest-labs-flux-pro",
+    stencil_image_provider: "black-forest-labs-flux-pro",
+    mockup_image_provider: "black-forest-labs-flux-pro",
+    stencil_image_quality: "low",
+    mockup_image_quality: "low",
     text_ai_provider: "gpt-4o-mini",
   },
   free: {
     label: "🆓 Mode Gratuit",
     description: "Quota Free — Gemini Flash + HF FLUX Schnell (free)",
     image_ai_provider: "huggingface-flux-free",
+    stencil_image_provider: "huggingface-flux-free",
+    mockup_image_provider: "huggingface-flux-free",
+    stencil_image_quality: "auto",
+    mockup_image_quality: "auto",
     text_ai_provider: "gemini-2.0-flash",
   },
 };
@@ -73,6 +86,7 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
+  const [testingBinaries, setTestingBinaries] = useState(false);
 
   useEffect(() => {
     fetch(apiUrl("/api/settings"))
@@ -81,15 +95,85 @@ export default function SettingsPage() {
         setSettings(data);
         setLoading(false);
       });
+
+    // Check query params for Etsy connection status
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("etsy_connect") === "success") {
+      setToast({ msg: "Connexion Etsy réussie ! 🛒", ok: true });
+      setTimeout(() => setToast(null), 4000);
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
   }, []);
+
+  const testBinaries = async () => {
+    setTestingBinaries(true);
+    try {
+      const res = await fetch(apiUrl("/api/settings/test-binaries"), { method: "POST" });
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      const pOk = data.potrace?.status === "OK";
+      const iOk = data.inkscape?.status === "OK";
+      if (pOk && iOk) {
+        setToast({ msg: "Potrace & Inkscape sont opérationnels ! ✔", ok: true });
+      } else {
+        const errors = [];
+        if (!pOk) errors.push("Potrace");
+        if (!iOk) errors.push("Inkscape");
+        setToast({ msg: `Échec : ${errors.join(" & ")} introuvable(s). ❌`, ok: false });
+      }
+    } catch {
+      setToast({ msg: "Erreur lors du test des binaires.", ok: false });
+    } finally {
+      setTestingBinaries(false);
+      setTimeout(() => setToast(null), 4000);
+    }
+  };
 
   const applyProfile = (key: keyof typeof PROFILES) => {
     const p = PROFILES[key];
     setSettings((s: any) => ({
       ...s,
       image_ai_provider: p.image_ai_provider,
+      stencil_image_provider: p.stencil_image_provider,
+      mockup_image_provider: p.mockup_image_provider,
+      stencil_image_quality: p.stencil_image_quality,
+      mockup_image_quality: p.mockup_image_quality,
       text_ai_provider: p.text_ai_provider,
     }));
+  };
+
+  const [storageStats, setStorageStats] = useState<any>(null);
+  const [purgingStorage, setPurgingStorage] = useState(false);
+
+  const loadStorageStats = () => {
+    fetch(apiUrl("/api/settings/storage-stats"))
+      .then((res) => res.json())
+      .then((data) => setStorageStats(data))
+      .catch(() => {});
+  };
+
+  useEffect(() => {
+    loadStorageStats();
+  }, []);
+
+  const handlePurgeStorage = async () => {
+    if (!confirm("Voulez-vous supprimer les fichiers temporaires et caches de calcul ? Vos fichiers finaux (SVG, DXF, PNG, Mockups, ZIP) seront strictement préservés.")) return;
+    setPurgingStorage(true);
+    try {
+      const res = await fetch(apiUrl("/api/settings/purge-storage"), { method: "POST" });
+      const data = await res.json();
+      if (res.ok) {
+        setToast({ msg: `Purge terminée : ${data.deleted_files_count} fichier(s) temporaire(s) supprimé(s) (${data.freed_space_mb} Mo libérés) ✔`, ok: true });
+        loadStorageStats();
+      } else {
+        setToast({ msg: "Erreur lors de la purge.", ok: false });
+      }
+    } catch {
+      setToast({ msg: "Erreur réseau lors de la purge.", ok: false });
+    } finally {
+      setPurgingStorage(false);
+      setTimeout(() => setToast(null), 4500);
+    }
   };
 
   const saveSettings = async () => {
@@ -108,6 +192,7 @@ export default function SettingsPage() {
       setTimeout(() => setToast(null), 3500);
     }
   };
+
 
   if (loading)
     return (
@@ -169,15 +254,17 @@ export default function SettingsPage() {
           icon={<ImageIcon className="text-rose-400 h-6 w-6" />}
           title="Génération d'Images (Pochoirs & Mockups)"
         >
-          <Field label="Fournisseur d'Image Préféré">
+          <Field label="Modèle pour les Pochoirs (Stencils)">
             <select
-              value={settings.image_ai_provider || "openrouter-flux-free"}
-              onChange={(e) => setSettings({ ...settings, image_ai_provider: e.target.value })}
+              value={settings.stencil_image_provider || settings.image_ai_provider || "huggingface-flux-free"}
+              onChange={(e) => setSettings({ ...settings, stencil_image_provider: e.target.value, image_ai_provider: e.target.value })}
               className={INPUT_CLS}
             >
-              <optgroup label="OpenAI">
-                <option value="dall-e-3">DALL-E 3 ⭐ (haute qualité)</option>
-                <option value="dall-e-2">DALL-E 2</option>
+              <optgroup label="OpenAI (Série GPT Image)">
+                <option value="gpt-image-2">GPT Image 2 ⭐ (haut de gamme, thinking)</option>
+                <option value="gpt-image-1.5">GPT Image 1.5 (équilibré)</option>
+                <option value="gpt-image-1">GPT Image 1</option>
+                <option value="gpt-image-1-mini">GPT Image 1 Mini (économique)</option>
               </optgroup>
               <optgroup label="Google">
                 <option value="imagen-3-generate">Imagen 3 Generate</option>
@@ -198,6 +285,66 @@ export default function SettingsPage() {
               <optgroup label="Banana / Legacy">
                 <option value="banana">Banana SDXL (img2img)</option>
               </optgroup>
+            </select>
+          </Field>
+
+          <Field label="Modèle pour les Mockups">
+            <select
+              value={settings.mockup_image_provider || settings.image_ai_provider || "huggingface-flux-free"}
+              onChange={(e) => setSettings({ ...settings, mockup_image_provider: e.target.value })}
+              className={INPUT_CLS}
+            >
+              <optgroup label="OpenAI (Série GPT Image)">
+                <option value="gpt-image-2">GPT Image 2 ⭐ (haut de gamme, thinking)</option>
+                <option value="gpt-image-1.5">GPT Image 1.5 (équilibré)</option>
+                <option value="gpt-image-1">GPT Image 1</option>
+                <option value="gpt-image-1-mini">GPT Image 1 Mini (économique)</option>
+              </optgroup>
+              <optgroup label="Google">
+                <option value="imagen-3-generate">Imagen 3 Generate</option>
+                <option value="imagen-3-edit">Imagen 3 Edit</option>
+              </optgroup>
+              <optgroup label="Replicate">
+                <option value="black-forest-labs-flux-pro">Flux Pro ⭐ (recommandé)</option>
+                <option value="stable-diffusion-xl-core">SDXL Core</option>
+                <option value="stable-diffusion-3-pro">SD 3 Pro</option>
+                <option value="bria-2.3">Bria 2.3</option>
+              </optgroup>
+              <optgroup label="Hugging Face (Gratuit/économique)">
+                <option value="huggingface-flux-free">HF FLUX.1-schnell (gratuit)</option>
+              </optgroup>
+              <optgroup label="Stability AI">
+                <option value="stability">Stability AI SD3 (Stable Diffusion 3)</option>
+              </optgroup>
+              <optgroup label="Banana / Legacy">
+                <option value="banana">Banana SDXL (img2img)</option>
+              </optgroup>
+            </select>
+          </Field>
+
+          <Field label="Qualité de Génération OpenAI GPT Image (Pochoirs)">
+            <select
+              value={settings.stencil_image_quality || "auto"}
+              onChange={(e) => setSettings({ ...settings, stencil_image_quality: e.target.value })}
+              className={INPUT_CLS}
+            >
+              <option value="low">Low (Économique et sans micro-détails parasites - Recommandé)</option>
+              <option value="medium">Medium (Compromis détails modérés)</option>
+              <option value="high">High (Très cher - Haute fidélité)</option>
+              <option value="auto">Auto (L'IA choisit le meilleur compromis)</option>
+            </select>
+          </Field>
+
+          <Field label="Qualité de Génération OpenAI GPT Image (Mockups)">
+            <select
+              value={settings.mockup_image_quality || "auto"}
+              onChange={(e) => setSettings({ ...settings, mockup_image_quality: e.target.value })}
+              className={INPUT_CLS}
+            >
+              <option value="low">Low (Économique et sans micro-détails parasites - Recommandé)</option>
+              <option value="medium">Medium (Compromis détails modérés)</option>
+              <option value="high">High (Très cher - Haute fidélité)</option>
+              <option value="auto">Auto (L'IA choisit le meilleur compromis)</option>
             </select>
           </Field>
 
@@ -430,7 +577,22 @@ export default function SettingsPage() {
                   type="button"
                   onClick={async () => {
                     if (confirm("Voulez-vous vraiment déconnecter Etsy ?")) {
-                      setSettings({ ...settings, etsy_oauth_token: "" });
+                      const updated = { ...settings, etsy_oauth_token: "" };
+                      setSettings(updated);
+                      setSaving(true);
+                      try {
+                        const res = await fetch(apiUrl("/api/settings"), {
+                          method: "PUT",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify(updated),
+                        });
+                        setToast({ msg: res.ok ? "Etsy déconnecté avec succès ✔" : "Erreur lors de la déconnexion.", ok: res.ok });
+                      } catch {
+                        setToast({ msg: "Erreur réseau.", ok: false });
+                      } finally {
+                        setSaving(false);
+                        setTimeout(() => setToast(null), 3500);
+                      }
                     }
                   }}
                   className="text-[10px] text-rose-400 hover:text-rose-300 underline ml-2"
@@ -483,6 +645,46 @@ export default function SettingsPage() {
 
         <hr className="border-slate-800" />
 
+        {/* ── Filigrane & Protection d'Images ─────────────────────────── */}
+        <Section
+          icon={<Shield className="text-emerald-400 h-6 w-6" />}
+          title="Filigrane & Protection d'Images (Anti-Vol Etsy)"
+        >
+          <Field label="Texte du Filigrane">
+            <input
+              id="watermark_text"
+              type="text"
+              value={settings.watermark_text ?? "digitalfilesbymop"}
+              onChange={(e) => setSettings({ ...settings, watermark_text: e.target.value })}
+              placeholder="digitalfilesbymop"
+              className={INPUT_CLS}
+            />
+            <p className="text-[10px] text-slate-500">
+              Texte imprimé en diagonale semi-transparente sur les aperçus Etsy pour empêcher le vol de vos créations.
+            </p>
+          </Field>
+
+          <Field label="Activation du Filigrane par Défaut">
+            <div className="flex items-center gap-3 p-3 bg-slate-800 rounded-lg border border-slate-700">
+              <input
+                id="default_apply_watermark"
+                type="checkbox"
+                checked={settings.default_apply_watermark ?? false}
+                onChange={(e) => setSettings({ ...settings, default_apply_watermark: e.target.checked })}
+                className="h-5 w-5 rounded border-slate-700 bg-slate-900 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+              />
+              <label htmlFor="default_apply_watermark" className="text-sm text-slate-300 cursor-pointer">
+                Appliquer le filigrane par défaut sur les mockups Etsy
+              </label>
+            </div>
+            <p className="text-[10px] text-slate-500">
+              Option cochable et modifiable à tout moment lors du lancement ou de la révision.
+            </p>
+          </Field>
+        </Section>
+
+        <hr className="border-slate-800" />
+
         {/* ── CLI / System paths ───────────────────────────────────────── */}
         <Section
           icon={<Wrench className="text-blue-400 h-6 w-6" />}
@@ -506,6 +708,56 @@ export default function SettingsPage() {
               className={INPUT_CLS}
             />
           </Field>
+          <div className="col-span-1 md:col-span-2 flex justify-end">
+            <button
+              type="button"
+              onClick={testBinaries}
+              disabled={testingBinaries}
+              className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold rounded-xl transition duration-200 cursor-pointer"
+            >
+              {testingBinaries ? "Test en cours..." : "Tester la connexion des binaires CLI"}
+            </button>
+          </div>
+        </Section>
+
+        <hr className="border-slate-800" />
+
+        {/* ── Maintenance & Stockage Disque ───────────────────────────── */}
+        <Section
+          icon={<HardDrive className="text-purple-400 h-6 w-6" />}
+          title="Maintenance & Stockage Disque (Storage/)"
+        >
+          <div className="p-4 bg-slate-800/80 rounded-xl border border-slate-700 space-y-2">
+            <div className="text-xs text-slate-400 font-semibold">Espace total occupé :</div>
+            <div className="text-xl font-bold text-white font-mono">
+              {storageStats ? `${storageStats.total_size_mb} Mo` : "Calcul en cours..."}
+            </div>
+            <div className="text-[11px] text-slate-400">
+              {storageStats ? `${storageStats.total_files} fichiers dans ${storageStats.creation_folders_count} dossiers de créations` : ""}
+            </div>
+          </div>
+
+          <div className="p-4 bg-slate-800/80 rounded-xl border border-slate-700 flex flex-col justify-between gap-3">
+            <div>
+              <div className="text-xs text-slate-400 font-semibold">Fichiers temporaires & caches :</div>
+              <div className="text-lg font-bold text-amber-400 font-mono">
+                {storageStats ? `${storageStats.temp_size_mb} Mo (${storageStats.temp_files_count} fichiers)` : "..."}
+              </div>
+              <div className="text-[10px] text-slate-500 mt-1">
+                Fonds IA intermédiaires, fragments de découpe et fichiers .tmp
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={handlePurgeStorage}
+              disabled={purgingStorage}
+              className="w-full py-2.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/40 text-xs font-bold rounded-xl transition flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+            >
+              <Trash2 className="h-4 w-4 text-rose-400" />
+              {purgingStorage ? "Nettoyage en cours..." : "Purger les fichiers temporaires"}
+            </button>
+          </div>
         </Section>
 
         <button

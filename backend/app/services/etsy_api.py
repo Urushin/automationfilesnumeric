@@ -24,6 +24,10 @@ def clean_text_for_title(text: str) -> str:
 def clean_tag(tag: str) -> str:
     if not tag:
         return ""
+    import unicodedata
+    # Normalize accents/diacritics
+    tag = unicodedata.normalize("NFKD", str(tag))
+    tag = tag.encode("ascii", "ignore").decode("ascii")
     # Remove illegal tag chars: , ; : ! @ # $ % ^ * ( ) + = { } [ ] | \ < > / and control chars
     tag = re.sub(r'[,;:!@#$%\^\*\(\)\+=\{\}\[\]\|\\<>\/\x00-\x1f]', "", tag)
     # Strip multiple spaces
@@ -236,6 +240,17 @@ def publish_listing_to_etsy(settings, creation, db) -> Dict[str, Any]:
     tags_for_taxonomy = (creation.tags_en or "") + "," + (creation.tags_fr or "")
     suggested_taxonomy = _suggest_taxonomy(tags_for_taxonomy)
 
+    # Build combined title: EN first, then FR, separated by " | " if both are present
+    title_en = creation.title_en or ""
+    title_fr = creation.title_fr or ""
+    if title_en and title_fr and title_en.lower() != title_fr.lower():
+        combined_title = f"{title_en} | {title_fr}"
+    elif title_en:
+        combined_title = title_en
+    else:
+        combined_title = title_fr
+    combined_title = clean_text_for_title(combined_title)[:140]
+
     # Build bilingual description (EN first for Etsy default, then FR)
     description_en = creation.description_en or ""
     description_fr = creation.description or ""
@@ -248,12 +263,22 @@ def publish_listing_to_etsy(settings, creation, db) -> Dict[str, Any]:
     else:
         full_description = description_fr
 
+    # Build tag list (merge EN first, then FR to fill remaining slots, max 13)
+    tags_list = []
+    seen_tags: set = set()
+    en_tags = [t.strip() for t in (creation.tags_en or "").split(",") if t.strip()]
+    fr_tags = [t.strip() for t in (creation.tags_fr or "").split(",") if t.strip()]
+    for t in en_tags + fr_tags:
+        if t not in seen_tags and len(tags_list) < 13:
+            seen_tags.add(t)
+            tags_list.append(t)
+
     # 1. Create digital listing shell
     listing_payload = {
-        "title": creation.title_en[:140],  # Etsy titles are strictly 140 chars max
+        "title": combined_title,
         "description": full_description,
-        "price": settings.default_price,
-        "quantity": settings.default_quantity,
+        "price": creation.price or settings.default_price,
+        "quantity": creation.quantity or settings.default_quantity,
         "who_made": "i_did",
         "when_made": "made_to_order",
         "is_supply": False,
@@ -261,6 +286,8 @@ def publish_listing_to_etsy(settings, creation, db) -> Dict[str, Any]:
         "state": settings.default_status.lower(),  # draft or active
         "type": "download"    # Crucial for digital product
     }
+    if tags_list:
+        listing_payload["tags"] = tags_list
     
     create_url = f"{ETSY_API_URL}/shops/{shop_id}/listings"
     create_resp = requests.post(create_url, headers=headers, json=listing_payload, timeout=30)
@@ -270,27 +297,62 @@ def publish_listing_to_etsy(settings, creation, db) -> Dict[str, Any]:
     listing_id = create_resp.json().get("listing_id")
     
     # 2. Upload Selected Images sequentially
-    images_to_upload = []
+    selected_assets = []
     if creation.selected_images_raw:
-        images_to_upload = [p.strip() for p in creation.selected_images_raw.split(",") if p.strip()]
+        selected_assets = [p.strip() for p in creation.selected_images_raw.split(",") if p.strip()]
     else:
-        # Default fallback list in sensible order
-        if creation.mockup_path:
-            images_to_upload.append(creation.mockup_path)
-        if creation.real_mockup_path:
-            images_to_upload.append(creation.real_mockup_path)
+        # Default fallback list in sensible order: plural/all mockups first, then design PNGs
+        real_list = getattr(creation, "real_mockup_paths", [])
+        if not real_list and creation.real_mockup_path:
+            real_list = [creation.real_mockup_path]
+            
+        raw_list = getattr(creation, "mockup_paths", [])
+        if not raw_list and creation.mockup_path:
+            raw_list = [creation.mockup_path]
+            
+        for p in real_list:
+            if p and p not in selected_assets:
+                selected_assets.append(p)
+        for p in raw_list:
+            if p and p not in selected_assets:
+                selected_assets.append(p)
         if creation.png_paths:
             for p in creation.png_paths:
-                if p not in images_to_upload:
-                    images_to_upload.append(p)
-                    
-    # Filter out empty paths and map to local filesystem
+                if p not in selected_assets:
+                    selected_assets.append(p)
+
+    # Exclude raw source png path from any upload
+    source_png_url = creation.source_png_path
+    selected_assets = [p for p in selected_assets if p != source_png_url]
+
+    # Categorize assets
+    images_to_upload = []
+    digital_files_to_upload = []
+
+    IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+    FILE_EXTS = {".zip", ".pdf", ".svg", ".ai", ".eps", ".dxf"}
+
+    for asset in selected_assets:
+        lower_asset = asset.lower()
+        _, ext = os.path.splitext(lower_asset)
+        if ext in IMAGE_EXTS:
+            images_to_upload.append(asset)
+        elif ext in FILE_EXTS:
+            digital_files_to_upload.append(asset)
+
+    # Filter out empty paths, blacklisted paths, and map to local filesystem
+    ETSY_IMAGE_BLACKLIST = {"/assets/templates/condition_dl.png"}
     valid_image_paths = []
     for img_url in images_to_upload:
+        if img_url in ETSY_IMAGE_BLACKLIST:
+            continue
         local_path = storage_url_to_path(img_url)
         if local_path and os.path.exists(local_path) and local_path not in valid_image_paths:
             valid_image_paths.append(local_path)
             
+    # Limit to 10 images (Etsy limit)
+    valid_image_paths = valid_image_paths[:10]
+
     if valid_image_paths:
         img_upload_url = f"{ETSY_API_URL}/shops/{shop_id}/listings/{listing_id}/images"
         multipart_headers = {
@@ -311,19 +373,44 @@ def publish_listing_to_etsy(settings, creation, db) -> Dict[str, Any]:
             except Exception as ie:
                 print(f"Exception during image upload for {img_file_path}: {ie}")
                 
-    # 3. Upload ZIP file containing files
-    zip_file_path = storage_url_to_path(creation.zip_path)
-    if zip_file_path and os.path.exists(zip_file_path):
+    # Parse digital files
+    valid_digital_files = []
+    for f_url in digital_files_to_upload:
+        local_path = storage_url_to_path(f_url)
+        if local_path and os.path.exists(local_path) and local_path not in valid_digital_files:
+            valid_digital_files.append(local_path)
+
+    # Fallback to ZIP package if no files selected
+    if not valid_digital_files:
+        fallback_zip = storage_url_to_path(creation.zip_path)
+        if fallback_zip and os.path.exists(fallback_zip):
+            valid_digital_files.append(fallback_zip)
+
+    # Limit to 5 digital files (Etsy limit)
+    valid_digital_files = valid_digital_files[:5]
+
+    # Upload digital files
+    if valid_digital_files:
         file_upload_url = f"{ETSY_API_URL}/shops/{shop_id}/listings/{listing_id}/files"
         multipart_headers = {
             "x-api-key": client_id,
             "Authorization": f"Bearer {access_token}"
         }
-        with open(zip_file_path, "rb") as zip_file:
-            files = {"file": (os.path.basename(zip_file_path), zip_file, "application/zip")}
-            file_resp = requests.post(file_upload_url, headers=multipart_headers, files=files, timeout=60)
-            if file_resp.status_code not in (200, 201):
-                print(f"Warning: Digital file attachment failed: {file_resp.text}")
+        for f_path in valid_digital_files:
+            try:
+                mime_type = "application/zip" if f_path.lower().endswith(".zip") else "application/octet-stream"
+                if f_path.lower().endswith(".pdf"):
+                    mime_type = "application/pdf"
+                
+                with open(f_path, "rb") as digital_file:
+                    files = {"file": (os.path.basename(f_path), digital_file, mime_type)}
+                    file_resp = requests.post(file_upload_url, headers=multipart_headers, files=files, timeout=60)
+                    if file_resp.status_code not in (200, 201):
+                        raise Exception(f"Digital file attachment failed for {f_path}: {file_resp.text}")
+                    else:
+                        print(f"Successfully uploaded listing file {f_path}")
+            except Exception as fe:
+                raise Exception(f"Digital file upload failed for {f_path}: {str(fe)}")
                 
     # Save publication info to database
     creation.is_published_etsy = True

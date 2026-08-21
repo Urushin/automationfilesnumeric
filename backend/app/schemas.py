@@ -17,6 +17,10 @@ class SettingBase(BaseModel):
     stability_key: Optional[str] = None
 
     image_ai_provider: str = "banana"
+    stencil_image_provider: str = "banana"
+    mockup_image_provider: str = "banana"
+    stencil_image_quality: str = "auto"
+    mockup_image_quality: str = "auto"
     text_ai_provider: str = "gemini-2.0-flash-lite"
     etsy_client_id: Optional[str] = None
     etsy_client_secret: Optional[str] = None
@@ -27,11 +31,27 @@ class SettingBase(BaseModel):
     potrace_path: str = "potrace"
     inkscape_path: str = "inkscape"
     mockup_background_path: Optional[str] = None
+    watermark_text: Optional[str] = "digitalfilesbymop"
+    default_apply_watermark: Optional[bool] = False
+    mockup_pack_count: Optional[int] = 4
 
     prompt_seo: Optional[str] = None
     prompt_image_generation: Optional[str] = None
     prompt_inpainting: Optional[str] = None
     prompt_trend_scraping: Optional[str] = None
+
+    prompt_stencil_single: Optional[str] = None
+    prompt_stencil_multiple: Optional[str] = None
+    prompt_stencil_framed_filigree: Optional[str] = None
+    prompt_vision_description: Optional[str] = None
+    prompt_imagen3_negative_suffix: Optional[str] = None
+    prompt_legacy_framed_filigree: Optional[str] = None
+    prompt_legacy_classic: Optional[str] = None
+    prompt_legacy_image_to_image: Optional[str] = None
+    prompt_legacy_grad_cap: Optional[str] = None
+    prompt_mockup_banana: Optional[str] = None
+    prompt_mockup_dalle3: Optional[str] = None
+    prompt_mockup_degraded: Optional[str] = None
 
 class SettingUpdate(SettingBase):
     pass
@@ -72,6 +92,7 @@ class CreationUpdate(BaseModel):
     real_mockup_path: Optional[str] = None
     png_paths_raw: Optional[str] = None
     source_png_variants_raw: Optional[str] = None
+    apply_watermark: Optional[bool] = None
 
 class CreationResponse(CreationBase):
     id: int
@@ -98,9 +119,16 @@ class CreationResponse(CreationBase):
     connectivity_warnings: Optional[int] = 0
     compliance_warnings: Optional[str] = None     # JSON string
     source_type: Optional[str] = "text_prompt"
+    apply_watermark: Optional[bool] = False
     png_paths: Optional[List[str]] = []
     svg_paths: Optional[List[str]] = []
     pdf_paths: Optional[List[str]] = []
+    mockup_paths: Optional[List[str]] = []
+    real_mockup_paths: Optional[List[str]] = []
+    commercial_mockup_paths: Optional[List[str]] = []
+    dxf_paths: Optional[List[str]] = []
+    ai_paths: Optional[List[str]] = []
+    eps_paths: Optional[List[str]] = []
     pipeline_status: Optional[str] = None          # JSON status of each component [NEW]
     selected_images_raw: Optional[str] = None
     source_png_variants_raw: Optional[str] = None
@@ -118,6 +146,8 @@ class GlobalPipelineRequest(BaseModel):
     image_ai_provider: Optional[str] = "openai"
     text_ai_provider: Optional[str] = "gemini"
     design_style: Optional[str] = "classic"
+    apply_watermark: Optional[bool] = False
+    watermark_text: Optional[str] = None
 
 class ModularPipelineRequest(BaseModel):
     theme: Optional[str] = None
@@ -131,6 +161,8 @@ class ModularPipelineRequest(BaseModel):
     generate_real_mockup: bool = False
     use_ai_mockup: bool = False
     apply_tp_overlay: bool = False
+    apply_watermark: bool = False
+    watermark_text: Optional[str] = None
     image_ai_provider: Optional[str] = "openai"
     text_ai_provider: Optional[str] = "gemini"
     design_style: Optional[str] = "classic"

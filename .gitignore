@@ -1,42 +1,62 @@
 # Databases
 *.db
+*.db-*
 *.sqlite
 *.sqlite3
+*.db-shm
+*.db-wal
+*db-journal
 
 # Python
 __pycache__/
 *.py[cod]
+*$py.class
 .venv/
 venv/
+backend/venv/
 build/
 dist/
 *.egg-info/
 
-# Node.js
-node_modules/
-.next/
-out
+# Storage & Temp Data
+backend/storage/
+storage/
+temp/
+tmp/
+*.tmp
 
-# Environment
+# Node.js / Frontend
+node_modules/
+frontend/node_modules/
+.next/
+frontend/.next/
+out/
+frontend/out/
+*.tsbuildinfo
+frontend/*.tsbuildinfo
+
+# Environment & Secrets
 .env*
 .env.local
+!.env.example
 
-# IDE
+# IDE & OS
 .vscode/
 .idea/
 *.swp
 .DS_Store
+Thumbs.db
 
 # Logs
 *.log
 logs/
 
-# Misc
+# Agent / AI meta files
+AGENTS.md
+**/AGENTS.md
+.agents/
+.antigravity/
+.gemini/
 .kilo/
 .kilocode/
 .vercel
-backend/storage/
-*.db-shm
-*.db-wal
-*db-journal
-
